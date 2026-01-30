@@ -2,11 +2,43 @@
 
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
-@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
-
-@theme {
+@theme inline {
+  /* Existing custom values */
   --shadow-center: 0 0 12px -2px rgb(0 0 0 / 0.05);
   --animate-pulse-fast: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+
+  /* shadcn/ui color palette - mapped from CSS variables */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* shadcn/ui radius values */
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
 }
 
 @plugin "daisyui" {
@@ -15,56 +47,58 @@
     dark --prefersdark;
 }
 
+/* Hyperliquid-inspired Teal Theme - Light */
 @plugin "daisyui/theme" {
   name: "light";
 
-  --color-primary: #93bbfb;
-  --color-primary-content: #212638;
-  --color-secondary: #dae8ff;
-  --color-secondary-content: #212638;
-  --color-accent: #93bbfb;
-  --color-accent-content: #212638;
-  --color-neutral: #212638;
-  --color-neutral-content: #ffffff;
-  --color-base-100: #ffffff;
-  --color-base-200: #f4f8ff;
-  --color-base-300: #dae8ff;
-  --color-base-content: #212638;
-  --color-info: #93bbfb;
-  --color-success: #34eeb6;
-  --color-warning: #ffcf72;
-  --color-error: #ff8863;
+  --color-primary: #20E3B2;
+  --color-primary-content: #0d1117;
+  --color-secondary: #161b22;
+  --color-secondary-content: #f0f6fc;
+  --color-accent: #20E3B2;
+  --color-accent-content: #0d1117;
+  --color-neutral: #0d1117;
+  --color-neutral-content: #f0f6fc;
+  --color-base-100: #f0f6fc;
+  --color-base-200: #e6edf5;
+  --color-base-300: #d0d7de;
+  --color-base-content: #0d1117;
+  --color-info: #58a6ff;
+  --color-success: #20E3B2;
+  --color-warning: #f0b429;
+  --color-error: #f85149;
 
-  --radius-field: 9999rem;
-  --radius-box: 1rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
   --tt-tailw: 6px;
 }
 
+/* Hyperliquid-inspired Teal Theme - Dark (Primary) */
 @plugin "daisyui/theme" {
   name: "dark";
 
-  --color-primary: #212638;
-  --color-primary-content: #f9fbff;
-  --color-secondary: #323f61;
-  --color-secondary-content: #f9fbff;
-  --color-accent: #4969a6;
-  --color-accent-content: #f9fbff;
-  --color-neutral: #f9fbff;
-  --color-neutral-content: #385183;
-  --color-base-100: #385183;
-  --color-base-200: #2a3655;
-  --color-base-300: #212638;
-  --color-base-content: #f9fbff;
-  --color-info: #385183;
-  --color-success: #34eeb6;
-  --color-warning: #ffcf72;
-  --color-error: #ff8863;
+  --color-primary: #20E3B2;
+  --color-primary-content: #0d1117;
+  --color-secondary: #1c2128;
+  --color-secondary-content: #f0f6fc;
+  --color-accent: #20E3B2;
+  --color-accent-content: #0d1117;
+  --color-neutral: #f0f6fc;
+  --color-neutral-content: #0d1117;
+  --color-base-100: #161b22;
+  --color-base-200: #0d1117;
+  --color-base-300: #010409;
+  --color-base-content: #f0f6fc;
+  --color-info: #58a6ff;
+  --color-success: #20E3B2;
+  --color-warning: #f0b429;
+  --color-error: #f85149;
 
-  --radius-field: 9999rem;
-  --radius-box: 1rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
 
   --tt-tailw: 6px;
-  --tt-bg: var(--color-primary);
+  --tt-bg: var(--color-base-300);
 }
 
 /*
@@ -104,6 +138,73 @@
 :root,
 [data-theme] {
   background: var(--color-base-200);
+}
+
+/* shadcn/ui CSS variables - Hyperliquid Teal Light theme */
+:root,
+[data-theme="light"] {
+  --radius: 0.5rem;
+  /* Light theme backgrounds */
+  --background: 210 25% 97%;
+  --foreground: 215 28% 7%;
+  --card: 0 0% 100%;
+  --card-foreground: 215 28% 7%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 215 28% 7%;
+  --muted: 210 20% 93%;
+  --muted-foreground: 215 16% 47%;
+  --destructive: 4 90% 58%;
+  --border: 214 20% 85%;
+  --input: 214 20% 85%;
+  --ring: 162 82% 51%;
+  /* Teal accent charts */
+  --chart-1: 162 82% 51%;
+  --chart-2: 199 89% 48%;
+  --chart-3: 262 83% 58%;
+  --chart-4: 43 96% 56%;
+  --chart-5: 4 90% 58%;
+  /* Sidebar */
+  --sidebar: 210 25% 97%;
+  --sidebar-foreground: 215 28% 7%;
+  --sidebar-primary: 162 82% 51%;
+  --sidebar-primary-foreground: 215 28% 7%;
+  --sidebar-accent: 210 20% 93%;
+  --sidebar-accent-foreground: 215 28% 7%;
+  --sidebar-border: 214 20% 85%;
+  --sidebar-ring: 162 82% 51%;
+}
+
+/* shadcn/ui CSS variables - Hyperliquid Teal Dark theme (Primary) */
+[data-theme="dark"] {
+  --radius: 0.5rem;
+  /* Dark backgrounds matching Hyperliquid */
+  --background: 216 28% 4%;
+  --foreground: 210 20% 98%;
+  --card: 215 28% 9%;
+  --card-foreground: 210 20% 98%;
+  --popover: 215 28% 9%;
+  --popover-foreground: 210 20% 98%;
+  --muted: 215 25% 14%;
+  --muted-foreground: 215 16% 57%;
+  --destructive: 4 90% 58%;
+  --border: 215 25% 17%;
+  --input: 215 25% 17%;
+  --ring: 162 82% 51%;
+  /* Teal accent charts */
+  --chart-1: 162 82% 51%;
+  --chart-2: 199 89% 48%;
+  --chart-3: 262 83% 58%;
+  --chart-4: 43 96% 56%;
+  --chart-5: 4 90% 58%;
+  /* Sidebar */
+  --sidebar: 216 28% 4%;
+  --sidebar-foreground: 210 20% 98%;
+  --sidebar-primary: 162 82% 51%;
+  --sidebar-primary-foreground: 216 28% 4%;
+  --sidebar-accent: 215 25% 14%;
+  --sidebar-accent-foreground: 210 20% 98%;
+  --sidebar-border: 215 25% 17%;
+  --sidebar-ring: 162 82% 51%;
 }
 
 .btn {
