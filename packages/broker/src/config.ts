@@ -8,7 +8,7 @@ import "dotenv/config";
 
 export const config = {
   // Broker wallet private key (also used as receiver in Yellow Network)
-  BROKER_PRIVATE_KEY: process.env.RECEIVER_PRIVATE_KEY!,
+  BROKER_PRIVATE_KEY: process.env.BROKER_PRIVATE_KEY!,
 
   // Yellow Network ClearNode WebSocket URL
   CLEARNODE_URL: process.env.CLEARNODE_URL ?? "wss://clearnet-sandbox.yellow.com/ws",
@@ -26,10 +26,10 @@ export const config = {
   USDC_ADDRESS: process.env.USDC_ADDRESS as `0x${string}`,
 
   // Keeper service URL for fetching hit cells
-  KEEPER_URL: process.env.KEEPER_URL ?? "http://localhost:3002",
+  KEEPER_URL: process.env.KEEPER_URL ?? "http://localhost:3001",
 
   // Broker API WebSocket port
-  BROKER_API_PORT: parseInt(process.env.BROKER_API_PORT ?? "3001"),
+  BROKER_API_PORT: parseInt(process.env.BROKER_API_PORT ?? "3002"),
 
   // Yellow Network contract addresses (Base Sepolia)
   CUSTODY_ADDRESS: (process.env.CUSTODY_ADDRESS ?? "0x019B65A265EB3363822f2752141b3dF16131b262") as `0x${string}`,

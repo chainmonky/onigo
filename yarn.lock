@@ -3603,6 +3603,18 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"@se-2/keeper@workspace:packages/keeper":
+  version: 0.0.0-use.local
+  resolution: "@se-2/keeper@workspace:packages/keeper"
+  dependencies:
+    "@types/node": ^20.10.0
+    "@types/ws": ^8.5.10
+    tsx: ^4.6.0
+    typescript: ^5.3.0
+    ws: ^8.14.2
+  languageName: unknown
+  linkType: soft
+
 "@se-2/nextjs@workspace:packages/nextjs":
   version: 0.0.0-use.local
   resolution: "@se-2/nextjs@workspace:packages/nextjs"
@@ -4920,7 +4932,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/node@npm:^20.10.7":
+"@types/node@npm:^20.10.0, @types/node@npm:^20.10.7":
   version: 20.19.31
   resolution: "@types/node@npm:20.19.31"
   dependencies:
@@ -4977,7 +4989,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/ws@npm:^8.2.2, @types/ws@npm:^8.5.0":
+"@types/ws@npm:^8.2.2, @types/ws@npm:^8.5.0, @types/ws@npm:^8.5.10":
   version: 8.18.1
   resolution: "@types/ws@npm:8.18.1"
   dependencies:
@@ -15961,7 +15973,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"tsx@npm:^4.19.0":
+"tsx@npm:^4.19.0, tsx@npm:^4.6.0":
   version: 4.21.0
   resolution: "tsx@npm:4.21.0"
   dependencies:
@@ -16081,6 +16093,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"typescript@npm:^5.3.0":
+  version: 5.9.3
+  resolution: "typescript@npm:5.9.3"
+  bin:
+    tsc: bin/tsc
+    tsserver: bin/tsserver
+  checksum: 0d0ffb84f2cd072c3e164c79a2e5a1a1f4f168e84cb2882ff8967b92afe1def6c2a91f6838fb58b168428f9458c57a2ba06a6737711fdd87a256bbe83e9a217f
+  languageName: node
+  linkType: hard
+
 "typescript@npm:~5.8.2":
   version: 5.8.3
   resolution: "typescript@npm:5.8.3"
@@ -16098,6 +16120,16 @@ __metadata:
     tsc: bin/tsc
     tsserver: bin/tsserver
   checksum: 2eee5c37cad4390385db5db5a8e81470e42e8f1401b0358d7390095d6f681b410f2c4a0c496c6ff9ebd775423c7785cdace7bcdad76c7bee283df3d9718c0f20
+  languageName: node
+  linkType: hard
+
+"typescript@patch:typescript@^5.3.0#~builtin<compat/typescript>":
+  version: 5.9.3
+  resolution: "typescript@patch:typescript@npm%3A5.9.3#~builtin<compat/typescript>::version=5.9.3&hash=a1c5e5"
+  bin:
+    tsc: bin/tsc
+    tsserver: bin/tsserver
+  checksum: 8bb8d86819ac86a498eada254cad7fb69c5f74778506c700c2a712daeaff21d3a6f51fd0d534fe16903cb010d1b74f89437a3d02d4d0ff5ca2ba9a4660de8497
   languageName: node
   linkType: hard
 
@@ -17084,7 +17116,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"ws@npm:^8.18.0, ws@npm:^8.19.0, ws@npm:^8.5.0":
+"ws@npm:^8.14.2, ws@npm:^8.18.0, ws@npm:^8.19.0, ws@npm:^8.5.0":
   version: 8.19.0
   resolution: "ws@npm:8.19.0"
   peerDependencies:
