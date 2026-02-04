@@ -55,7 +55,7 @@ contract Onigo is Ownable {
 
     // Events: a way to emit log statements from smart contract that can be listened to by external parties
     event MarketCreated(uint16 indexed marketId, string marketName, uint256 marketStartTime, uint256 roundLength);
-    event RoundSettled(uint16 indexed marketId, uint256 roundId);
+    event RoundSettled(uint16 indexed marketId, uint256 roundId, address indexed player, uint256 payout);
     event CommissionWithdrawn(address indexed owner, uint256 amount);
     event PlayerPayoutClaimed(address indexed player, uint256 amount);
 
@@ -128,18 +128,6 @@ contract Onigo is Ownable {
             unchecked { ++i; }
         }
 
-        uint256 totalCommissionToBeClaimed;
-        uint256 totalPayouts;
-        for (uint j = 0; j < players.length;) {
-            uint256 commissionFromPlayer = (payouts[j] * market.commissionBps) / 10000;
-            unclaimedPlayerPayouts[players[j]] += payouts[j] - commissionFromPlayer;
-            totalPayouts += payouts[j];
-            totalCommissionToBeClaimed += commissionFromPlayer;
-            unchecked { ++j; }
-        }
-
-        unclaimedCommissions += totalCommissionToBeClaimed;
-
         settlementPerRoundPerMarket[marketId][roundId] = SettlementData({
             marketId: marketId,
             roundId: roundId,
@@ -148,7 +136,21 @@ contract Onigo is Ownable {
             payouts: payouts
         });
 
-        emit RoundSettled(marketId, roundId);
+        uint256 totalCommissionToBeClaimed;
+        uint256 totalPayouts;
+        for (uint j = 0; j < players.length;) {
+            uint256 commissionFromPlayer = (payouts[j] * market.commissionBps) / 10000;
+            unclaimedPlayerPayouts[players[j]] += payouts[j] - commissionFromPlayer;
+            totalPayouts += payouts[j];
+            totalCommissionToBeClaimed += commissionFromPlayer;
+            
+            emit RoundSettled(marketId, roundId, players[j], payouts[j]);
+            unchecked { ++j; }
+        }
+
+        unclaimedCommissions += totalCommissionToBeClaimed;
+
+        
 
         IERC20(usdc).safeTransferFrom(broker, address(this), totalPayouts);
     }
