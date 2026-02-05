@@ -24,146 +24,178 @@ A parimutuel matrix betting game where players bet on grid cells (time × price)
 │  ┌──────────┐  ┌──────────┐  ┌─────────┐  ┌────────────┐    │
 │  │ Grid UI  │  │  Wallet  │  │  ENS    │  │  Game      │    │
 │  │ (betting)│  │ Connect  │  │ Display │  │  Status    │    │
-│  └────┬─────┘  └────┬─────┘  └─────────┘  └────────────┘    │
-│       │              │                                      │
-│  ┌────▼──────────────▼──────────────────────────────────┐   │
-│  │              Yellow SDK (Browser)                    │   │
-│  │  - Channel management                                │   │
-│  │  - Bet signing (off-chain state updates)             │   │
-│  │  - WebSocket to ClearNode                            │   │
-│  └──────────────────────┬───────────────────────────────┘   │
-└─────────────────────────┼───────────────────────────────────┘
-                          │ WebSocket
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     YELLOW NETWORK                          │
-│                                                             │
-│  ┌──────────────┐         ┌─────────────────────────────┐   │
-│  │  ClearNode   │◄───────►│  Custody Contract (on-chain)│   │
-│  │  (off-chain) │         │  - Deposits                 │   │
-│  │  - Message   │         │  - Channel open/close       │   │
-│  │    routing   │         │  - Cross-chain unified      │   │
-│  │  - Auth      │         │    balance                  │   │
-│  └──────┬───────┘         └─────────────────────────────┘   │
-└─────────┼───────────────────────────────────────────────────┘
-          │ WebSocket
-          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    BROKER (Backend)                         │
-│                   (Node.js / Express)                       │
-│                                                             │
-│  ┌───────────────┐  ┌──────────────┐  ┌─────────────────┐   │
-│  │ Yellow SDK    │  │ Round        │  │ Keeper          │   │
-│  │ (Server)      │  │ Manager      │  │ (Price Oracle)  │   │
-│  │               │  │              │  │                 │   │
-│  │ - Co-sign     │  │ - Phase      │  │ - Poll price    │   │
-│  │   bet states  │  │   transitions│  │   feed          │   │
-│  │ - Channel     │  │ - Aggregate  │  │ - Compute hit   │   │
-│  │   management  │  │   bets       │  │   cells         │   │
-│  │ - Fund        │  │ - Trigger    │  │ - Submit to     │   │
-│  │   transfers   │  │   settlement │  │   settlement    │   │
-│  └───────┬───────┘  └──────┬───────┘  └────────┬────────┘   │
-└──────────┼──────────────────┼────────────────────┼──────────┘
-           │                  │                    │
-           ▼                  ▼                    ▼
-┌─────────────────────────────────────────────────────────────┐
-│                  SMART CONTRACTS (On-Chain)                 │
-│                     (Foundry / Solidity)                    │
-│                                                             │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │                    Onigo.sol                         │   │
-│  │                (Settlement Ledger)                   │   │
-│  │                                                      │   │
-│  │  createMarket()                                      │   │
-│  │  settleRound(marketId, roundId, winningCells[],     │   │
-│  │               players[], payouts[])                  │   │
-│  │  claimPlayerPayout()                                 │   │
-│  │  withdrawCommissions()                               │   │
-│  └──────────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+│  └────┬─────┘  └────┬─────┘  └─────────┘  └─────┬──────┘    │
+│       │              │                           │           │
+│  ┌────▼──────────────▼───────────────────┐  ┌────▼───────┐   │
+│  │        Yellow SDK (Browser)           │  │  Game WS   │   │
+│  │  - Channel management                 │  │  Client    │   │
+│  │  - Bet signing (off-chain states)     │  │            │   │
+│  │  - WebSocket to ClearNode             │  │  Prices,   │   │
+│  └──────────────────┬────────────────────┘  │  hit cells,│   │
+│                     │                       │  phases     │   │
+│                     │                       └────┬───────┘   │
+└─────────────────────┼────────────────────────────┼───────────┘
+                      │ WebSocket                  │ WebSocket
+                      ▼                            │
+┌─────────────────────────────────────────────┐    │
+│               YELLOW NETWORK                │    │
+│                                             │    │
+│  ┌──────────────┐  ┌────────────────────┐   │    │
+│  │  ClearNode   │  │ Custody Contract   │   │    │
+│  │  (off-chain) ├─►│ (on-chain)         │   │    │
+│  │  - Routing   │  │ - Deposits         │   │    │
+│  │  - Auth      │  │ - Channel mgmt     │   │    │
+│  └──────┬───────┘  └────────────────────┘   │    │
+└─────────┼───────────────────────────────────┘    │
+          │ WebSocket                              │
+          ▼                                        │
+┌─────────────────────────────────┐                │
+│         BROKER                  │                │
+│       (Node.js)                 │                │
+│                                 │                │
+│  ┌───────────────┐              │                │
+│  │ Yellow SDK    │              │                │
+│  │ (Server)      │              │                │
+│  │ - Co-sign     │              │                │
+│  │   bet states  │              │                │
+│  │ - Channel     │              │   hit cells    │
+│  │   management  │              │◄───────────────┼──────────┐
+│  │ - Fund        │              │                │          │
+│  │   transfers   │              │                │          │
+│  └───────┬───────┘              │                │          │
+│          │                      │                │          │
+│  ┌───────▼───────┐              │                │          │
+│  │ Payout        │              │                │          │
+│  │ Calculator    │              │                │          │
+│  │ - Aggregate   │              │                │          │
+│  │   bets        │              │                │          │
+│  │ - Compute     │              │                │          │
+│  │   payouts     │              │                │          │
+│  │ - Settle      │              │                │          │
+│  │   on-chain    │              │                │          │
+│  └───────┬───────┘              │                │          │
+└──────────┼──────────────────────┘                │          │
+           │                                       │          │
+           ▼                                       │          │
+┌──────────────────────────────┐    ┌──────────────┴──────────┐
+│   SMART CONTRACTS (On-Chain) │    │         KEEPER          │
+│      (Foundry / Solidity)    │    │       (Node.js)         │
+│                              │    │                         │
+│  ┌────────────────────────┐  │    │  ┌───────────────────┐  │
+│  │      Onigo.sol         │  │    │  │  Price Tracker    │  │
+│  │  (Settlement Ledger)   │  │    │  │  - Poll APIs      │  │
+│  │                        │  │    │  │  - Compute hit    │  │
+│  │  createMarket()        │  │    │  │    cells          │  │
+│  │  settleRound()         │  │    │  │  - Interpolation  │  │
+│  │  claimPlayerPayout()   │  │    │  └─────────┬─────────┘  │
+│  │  withdrawCommissions() │  │    │            │            │
+│  └────────────────────────┘  │    │  ┌─────────▼─────────┐  │
+│                              │    │  │  WebSocket Server │  │
+│                              │    │  │  - ROUND_START    │  │
+│                              │    │  │  - PHASE_CHANGE   │  │
+│                              │    │  │  - PRICE_UPDATE   │  │
+│                              │    │  │  - ROUND_END      │  │
+│                              │    │  └───────────────────┘  │
+└──────────────────────────────┘    └─────────────────────────┘
 ```
+
+**Backend is split into two independent services:**
+
+- **Keeper** — Polls price feed APIs, computes hit cells (with interpolation), manages round phases (BETTING → LIVE → SETTLING), and broadcasts real-time updates to frontends via WebSocket. See `onigo-keeper-websocket-spec.md` for full implementation details.
+- **Broker** — Receives user funds via Yellow Network state channels, co-signs bets, aggregates bets per round, requests hit cells from the keeper, computes payouts, and settles on-chain via `settleRound()`.
 
 ---
 
 ## 3. Game Flow (Sequence Diagram)
 
 ```
-Player          Frontend        Yellow/ClearNode      Broker           Contract        Oracle
-  │                │                  │                  │                │               │
-  │ ── SETUP (once per session) ───────────────────────────────────────────────────────   │
-  │                │                  │                  │                │               │
-  ��  Connect      │                  │                  │                │               │
-  │  wallet ──────►│                  │                  │                │               │
-  │                │  Auth request ──►│                  │                │               │
-  │                │◄── Challenge ────│                  │                │               │
-  │  Sign ◄────────│                  │                  │                │               │
-  │  challenge ───►│  Auth verify ───►│                  │                │               │
-  │                │◄── Authenticated │                  │                │               │
-  │                │                  │                  │                │               │
-  │  Deposit       │                  │                  │                │               │
-  │  USDC ────────►│ ─── deposit() ──────────────────────────────►│ (Custody)             │
-  │                │                  │                  │                │               │
-  │  Open          │  Open channel ──►│  Notify ────────►│                │               │
-  │  channel ─────►│◄── Co-signed ─── │◄── Co-sign ──────│                │               │
-  │                │                  │                  │                │               │
-  │ ── BETTING PHASE (60s, repeats every round) ────────────────────────────────────────  │
-  │                │                  │                  │                │               │
-  │  Select cells  │                  │                  │                │               │
-  │  + amount ────►│                  │                  │                │               │
-  │                │  State update:   │                  │                │               │
-  │  Sign ◄────────│  [P:90, B:10]    │                  │                │               │
-  │  state ───────►│  data: [bet1] ──►│  Forward ───────►│                │               │
-  │                │                  │                  │  Validate      │               │
-  │                │                  │◄── Co-sign ──────│  + co-sign     │               │
-  │                │◄── Confirmed ────│                  │                │               │
-  │                │                  │                  │                │               │
-  │  More bets...  │  State update:   │                  │                │               │
-  │  (same flow)   │  [P:70, B:30]    │                  │                │               │
-  │                │  data: [b1,b2,b3]│                  │  Store         │               │
-  │                │                  │                  │  cumulative    │               │
-  │                │                  │                  │  bet history   │               │
-  │                │                  │                  │                │               │
-  │ ── LIVE PHASE (120s) ───────────────────────────────────────────────────────────────  │
-  │                │                  │                  │                │               │
-  │                │  Live price      │                  │                │  Poll price   │
-  │                │  feed via WS ◄───│◄─────────────────│◄─────────────────────────────  │
-  │                │                  │                  │                │               │
-  │                │                  │                  │  Track which   │               │
-  │                │                  │                  │  cells the     │               │
-  │                │                  │                  │  price graph   │               │
-  │                │                  │                  │  traverses     │               │
-  │                │                  │                  │                │               │
-  │ ── SETTLING PHASE (on-chain) ─────────────────────────────────────────────────────    │
-  │                │                  │                  │                │               │
-  │                │                  │                  │  Resize/close  │               │
-  │                │                  │                  │  channels to   │               │
-  │                │                  │                  │  withdraw bet  │               │
-  │                │                  │                  │  funds───►│(Custody)           │
-  │                │                  │                  │                │               │
-  │                │                  │                  │  settleRound() │               │
-  │                │                  │                  │  (hitCells +   │               │
-  │                │                  │                  │   winners +    │               │
-  │                │                  │                  │   payouts) ───►│               │
-  │                │                  │                  │                │               │
-  │ ── POST-SETTLEMENT ─────────────────────────────────────────────────────────────────  │
-  │                │                  │                  │                │               │
-  │                │                  │                  │◄── payouts ────│               │
-  │                │                  │                  │  deposited     │               │
-  │                │                  │◄── Update ───────│                │               │
-  │                │◄── Channel ──────│  channel states  │                │               │
-  │                │    updated       │  with winnings   │                │               │
-  │                │                  │                  │                │               │
-  │  OR: claim     │                  │                  │                │               │
-  │  directly ────►│ ─── claimPlayerPayout() ──────────────────────────►│               │
-  │◄── USDC ───────│◄──────────────────────────────────────────────────── │               │
-  │                │                  │                  │                │               │
-  │ ── CASH OUT (anytime) ────────────────────────────────────────────────────────────    │
-  │                │                  │                  │                │               │
-  │  Close         │  Close channel ─►│  Notify ────────►│                │               │
-  │  channel ─────►│                  │◄── Co-sign ──────│                │               │
-  │                │ ─── close() ──────────────────────────────────►│ (Custody)           │
-  │◄── USDC ───────│◄─────────────────────────────────────────────────────│               │
+Player          Frontend        Yellow/ClearNode      Broker          Keeper          Contract
+  │                │                  │                  │               │               │
+  │ ── SETUP (once per session) ────────────────────────────────────────────────────────  │
+  │                │                  │                  │               │               │
+  │  Connect       │                  │                  │               │               │
+  │  wallet ──────►│                  │                  │               │               │
+  │                │  Auth request ──►│                  │               │               │
+  │                │◄── Challenge ────│                  │               │               │
+  │  Sign ◄────────│                  │                  │               │               │
+  │  challenge ───►│  Auth verify ───►│                  │               │               │
+  │                │◄── Authenticated │                  │               │               │
+  │                │                  │                  │               │               │
+  │  Deposit       │                  │                  │               │               │
+  │  USDC ────────►│ ─── deposit() ──────────────────────────────────────────►│(Custody) │
+  │                │                  │                  │               │               │
+  │  Open          │  Open channel ──►│  Notify ────────►│               │               │
+  │  channel ─────►│◄── Co-signed ─── │◄── Co-sign ──────│               │               │
+  │                │                  │                  │               │               │
+  │                │  Subscribe ──────────────────────────────────►│               │
+  │                │  to market WS    │                  │         (game WS)       │
+  │                │                  │                  │               │               │
+  │ ── BETTING PHASE (repeats every round) ─────────────────────────────────────────────  │
+  │                │                  │                  │               │               │
+  │                │◄── ROUND_START ──────────────────────────────│               │
+  │                │                  │                  │               │               │
+  │  Select cells  │                  │                  │               │               │
+  │  + amount ────►│                  │                  │               │               │
+  │                │  State update:   │                  │               │               │
+  │  Sign ◄────────│  [P:90, B:10]    │                  │               │               │
+  │  state ───────►│  data: [bet1] ──►│  Forward ───────►│               │               │
+  │                │                  │                  │  Validate     │               │
+  │                │                  │◄── Co-sign ──────│  + co-sign    │               │
+  │                │◄── Confirmed ────│                  │               │               │
+  │                │                  │                  │               │               │
+  │  More bets...  │  State update:   │                  │               │               │
+  │  (same flow)   │  [P:70, B:30]    │                  │               │               │
+  │                │  data: [b1,b2,b3]│                  │  Store        │               │
+  │                │                  │                  │  cumulative   │               │
+  │                │                  │                  │  bet history  │               │
+  │                │                  │                  │               │               │
+  │ ── LIVE PHASE ─────────────────────────────────────────────────────────────────────   │
+  │                │                  │                  │               │               │
+  │                │◄── PHASE_CHANGE (LIVE) ─────────────────────│               │
+  │                │                  │                  │               │  Poll price   │
+  │                │                  │                  │               │  APIs (1s)    │
+  │                │                  │                  │               │               │
+  │                │◄── PRICE_UPDATE ─────────────────────────────│  Compute     │
+  │                │  (price, hitCells│                  │               │  hit cells    │
+  │                │   so far)        │                  │               │  (interpolate)│
+  │                │                  │                  │               │               │
+  │ ── SETTLING PHASE ─────────────────────────────────────────────────────────────────   │
+  │                │                  │                  │               │               │
+  │                │◄── ROUND_END (final hitCells) ──────────────│               │
+  │                │                  │                  │               │               │
+  │                │                  │                  │◄── hitCells ──│               │
+  │                │                  │                  │               │               │
+  │                │                  │                  │  Compute      │               │
+  │                │                  │                  │  payouts      │               │
+  │                │                  │                  │               │               │
+  │                │                  │                  │  Resize/close │               │
+  │                │                  │                  │  channels to  │               │
+  │                │                  │                  │  withdraw bet │               │
+  │                │                  │                  │  funds───────────────►│(Custody)
+  │                │                  │                  │               │               │
+  │                │                  │                  │  settleRound()│               │
+  │                │                  │                  │  (hitCells +  │               │
+  │                │                  │                  │   players +   │               │
+  │                │                  │                  │   payouts) ──────────►│       │
+  │                │                  │                  │               │               │
+  │ ── POST-SETTLEMENT ────────────────────────────────────────────────────────────────   │
+  │                │                  │                  │               │               │
+  │                │                  │                  │◄── payouts ──────────│        │
+  │                │                  │                  │  deposited    │               │
+  │                │                  │◄── Update ───────│               │               │
+  │                │◄── Channel ──────│  channel states  │               │               │
+  │                │    updated       │  with winnings   │               │               │
+  │                │                  │                  │               │               │
+  │  OR: claim     │                  │                  │               │               │
+  │  directly ────►│ ─── claimPlayerPayout() ────────────────────────────────►│          │
+  │◄── USDC ───────│◄────────────────────────────────────────────────────────│           │
+  │                │                  │                  │               │               │
+  │ ── CASH OUT (anytime) ─────────────────────────────────────────────────────────────   │
+  │                │                  │                  │               │               │
+  │  Close         │  Close channel ─►│  Notify ────────►│               │               │
+  │  channel ─────►│                  │◄── Co-sign ──────│               │               │
+  │                │ ─── close() ──────────────────────────────────────────────►│(Custody)
+  │◄── USDC ───────│◄─────────────────────────────────────────────────────────│          │
 ```
 
 ---
@@ -429,54 +461,137 @@ await client.updateState({
 });
 ```
 
-### 6.2 Broker-Side (Backend)
+### 6.2 Broker (Independent Service)
+
+The broker is a separate backend service from the keeper. It manages Yellow Network channels and handles settlement.
+
+**Architecture:**
+
+```
+packages/broker/src/
+├── index.ts        — Main entry: ClearNode auth, WebSocket API server, event handlers
+├── types.ts        — GridCell, Bet, BetData, RoundBets, PayoutResult, BET_DATA_ABI
+├── config.ts       — Environment config (BROKER_PRIVATE_KEY, CLEARNODE_URL, etc.)
+├── payout.ts       — computePayouts() — parimutuel algorithm from Section 9
+├── betManager.ts   — BetManager class — in-memory bet storage by market/round
+├── settler.ts      — Settler class — on-chain settlement (USDC approval + settleRound)
+└── keeper.ts       — KeeperClient class — HTTP client for hit cells
+```
+
+**One Session Per Bet Model:**
+
+Each bet creates a new app session that is immediately auto-closed, transferring funds to the broker:
 
 ```typescript
-// packages/nextjs/server/broker.ts  (or separate backend)
+// Player sends create_session request with bet data
+// Broker co-signs the session creation
+// Session auto-closes with allocations [player: 0, broker: betAmount]
+// Bet is recorded in BetManager for later settlement
+```
 
-// 1. Listen for state updates from players
-clearNode.on("stateUpdate", async (state, playerChannel) => {
-  const betData = decodeBetData(state.data);
+**WebSocket API (port 3001):**
 
-  // 2. Validate bet
-  if (!isValidBet(betData, currentRoundPhase)) {
-    return reject(state);
+| Message Type | Direction | Description |
+|--------------|-----------|-------------|
+| `create_session` | Client → Broker | Create app session with bet, broker co-signs |
+| `session_created` | Broker → Client | Session created successfully |
+| `settle_round` | Client → Broker | Trigger settlement for a round |
+| `round_settled` | Broker → Client | Settlement completed with tx hash |
+| `get_bets` | Client → Broker | Query current bet state |
+| `get_broker_address` | Client → Broker | Get broker's address |
+
+**Settlement Flow:**
+
+```typescript
+// broker/src/index.ts — handleSettleRound()
+
+async function handleSettleRound(marketId: number, roundId: number) {
+  // 1. Get all bets from BetManager
+  const roundBets = betManager.getRoundBets(marketId, roundId);
+
+  // 2. Fetch hit cells from keeper (or use mock if unavailable)
+  const hitCells = await keeperClient.getHitCells(marketId, roundId);
+
+  // 3. Get market config for commission rate
+  const market = await settler.getMarketConfig(marketId);
+
+  // 4. Compute payouts using parimutuel algorithm
+  const payoutResult = computePayouts(roundBets.bets, hitCells, market.commissionBps);
+
+  // 5. Settle on-chain (handles USDC approval automatically)
+  const txHash = await settler.settleRound(marketId, roundId, hitCells, payoutResult);
+
+  // 6. Clear round from memory
+  betManager.clearRound(marketId, roundId);
+}
+```
+
+**Payout Computation (payout.ts):**
+
+```typescript
+// Implements Section 9 algorithm
+function computePayouts(bets: BetData[], hitCells: GridCell[], commissionBps: number): PayoutResult {
+  // Step 1: totalPool = sum of all bet amounts
+  // Step 2: prizePool = totalPool - commission
+  // Step 3: For each bet: winningStake = amount * hitCount / totalCells
+  // Step 4: totalWinningStake = sum of winning stakes
+  // Step 5: For each winner: payout = winningStake * prizePool / totalWinningStake
+  // Edge case: No winners → refund minus commission
+}
+```
+
+**On-Chain Settlement (settler.ts):**
+
+```typescript
+class Settler {
+  async settleRound(marketId, roundId, winningCells, payoutResult) {
+    // 1. Check/approve USDC allowance for Onigo contract
+    // 2. Call Onigo.settleRound() with winning cells, players, payouts
+    // 3. Wait for tx confirmation
+    return txHash;
   }
 
-  // 3. Co-sign state
-  const coSigned = await broker.coSign(state);
-  return coSigned;
-});
-
-// 4. At settlement time
-async function settleRound(roundId: number) {
-  // Collect all bets from all player channels
-  const allBets = collectBetsFromChannels(roundId);
-
-  // Get hit cells from keeper
-  const hitCells = keeper.getHitCells(roundId);
-
-  // Compute payouts
-  const payouts = computePayouts(allBets, hitCells, commissionRate);
-
-  // Withdraw funds from channels (resize)
-  for (const channel of activeChannels) {
-    await channel.resize(/* move bet funds to broker */);
+  async getMarketConfig(marketId): Promise<Market> {
+    // Read market config from contract
   }
 
-  // Approve USDC spend, then submit to contract
-  await usdc.approve(onigoAddress, totalPayoutAmount);
-  await onigo.settleRound(
-    marketId, roundId, hitCells,
-    payouts.players, payouts.payoutAmounts
-  );
-
-  // Update winner channels with winnings
-  for (const winner of payouts.winners) {
-    await winner.channel.updateState(/* add winnings back */);
+  async verifyBrokerRole(): Promise<boolean> {
+    // Verify this address is registered as broker
   }
 }
 ```
+
+**Environment Variables:**
+
+```env
+RECEIVER_PRIVATE_KEY=0x...      # Broker wallet private key
+CLEARNODE_URL=wss://...         # Yellow Network ClearNode
+RPC_URL=http://...              # Blockchain RPC
+CHAIN_ID=31337                  # Chain ID (31337=local, 84532=Base Sepolia)
+ONIGO_CONTRACT_ADDRESS=0x...    # Onigo.sol address
+USDC_ADDRESS=0x...              # USDC token address
+KEEPER_URL=http://localhost:3002
+BROKER_API_PORT=3001
+```
+
+**Running the Broker:**
+
+```bash
+# Start broker service
+yarn dev
+
+# Place a test bet
+yarn demo
+
+# Trigger settlement (via WebSocket message)
+{ "type": "settle_round", "marketId": 1, "roundId": 1 }
+```
+
+**Notes:**
+
+- Bets are stored in memory — lost on restart (MVP limitation)
+- Future: Recover bets from ClearNode via `get_app_sessions` + `sessionData` field
+- Keeper client has mock fallback for testing without keeper service
 
 ### 6.3 Cross-Chain Deposit Flow
 
@@ -532,64 +647,99 @@ function PlayerName({ address }: { address: string }) {
 
 ---
 
-## 8. Keeper (Price Oracle Tracker)
+## 8. Keeper (Independent Service)
+
+The keeper is a standalone backend service, separate from the broker. It is responsible for:
+
+1. **Price feed polling** — Fetches price data from external APIs (Chainlink, Binance, etc.) every 1 second during the LIVE phase
+2. **Hit cell computation** — Determines which grid cells the price chart traverses, using linear interpolation between consecutive data points to capture all crossed rows
+3. **Round phase management** — Tracks BETTING → LIVE → SETTLING transitions based on market timing config
+4. **WebSocket broadcasting** — Sends real-time updates to connected frontends
+5. **Hit cell delivery to broker** — Provides final hit cells to the broker for payout computation and on-chain settlement
+
+### 8.1 Core Calculations
 
 ```typescript
-// packages/nextjs/server/keeper.ts
+const effectiveIncrement = market.dataIncrement * Math.pow(10, market.dataPower);
 
-class Keeper {
-  private priceHistory: { price: number; timestamp: number }[] = [];
-  private hitCells: GridCell[] = [];
+// Price → grid row
+function priceToRow(price: number): number {
+  return Math.floor(price / effectiveIncrement) * effectiveIncrement;
+}
 
-  // During LIVE phase: poll price every second
-  async trackPrices(market: Market, roundStartTime: number) {
-    const interval = setInterval(async () => {
-      const { price, timestamp } = await oracle.getLatestPrice();
-      this.priceHistory.push({ price, timestamp });
-    }, 1000); // poll every second
+// Timestamp → time slot (0-based column index)
+function timestampToTimeSlot(timestamp: number, liveStartTime: number): number {
+  return Math.floor((timestamp - liveStartTime) / market.timeSlotWidth);
+}
 
-    // After LIVE phase ends
-    setTimeout(() => {
-      clearInterval(interval);
-      this.computeHitCells(market);
-    }, LIVE_DURATION);
+// All rows traversed between two consecutive prices (interpolation)
+function getRowsBetween(price1: number, price2: number): number[] {
+  const row1 = priceToRow(price1);
+  const row2 = priceToRow(price2);
+  const rows: number[] = [];
+  for (let r = Math.min(row1, row2); r <= Math.max(row1, row2); r += effectiveIncrement) {
+    rows.push(r);
   }
+  return rows;
+}
+```
 
-  // Compute which cells the price graph traversed
-  computeHitCells(market: Market) {
-    for (const dataPoint of this.priceHistory) {
-      const timeSlot = Math.floor(
-        (dataPoint.timestamp - roundStartTime) / market.timeSlotWidth
-      );
+### 8.2 Hit Cell Computation
 
-      // Price might cross multiple rows between data points
-      // Interpolate between consecutive points
-      const currentRow = Math.floor(dataPoint.price / market.priceIncrement);
+For each consecutive pair of price points, the keeper computes all traversed rows and assigns them to the relevant time slot(s). When a pair crosses a time slot boundary, traversed rows are assigned to both slots.
 
-      // Add cell
-      this.hitCells.push({
-        timeSlot,
-        priceRangeStart: currentRow * market.priceIncrement
-      });
+```typescript
+function computeHitCells(priceHistory: PricePoint[], liveStartTime: number): GridCell[] {
+  const hitMap = new Map<string, GridCell>();
 
-      // If price crossed rows between this and previous point,
-      // add all intermediate rows too
-      if (previousPoint) {
-        const prevRow = Math.floor(previousPoint.price / market.priceIncrement);
-        for (let row = Math.min(prevRow, currentRow);
-             row <= Math.max(prevRow, currentRow); row++) {
-          this.hitCells.push({
-            timeSlot,
-            priceRangeStart: row * market.priceIncrement
-          });
-        }
-      }
+  for (let i = 0; i < priceHistory.length; i++) {
+    const curr = priceHistory[i];
+    const currSlot = timestampToTimeSlot(curr.timestamp, liveStartTime);
+    if (currSlot < 0) continue;
+
+    if (i === 0) {
+      const row = priceToRow(curr.price);
+      hitMap.set(`${currSlot}:${row}`, { timeSlot: currSlot, priceRangeStart: row });
+      continue;
     }
 
-    // Deduplicate
-    this.hitCells = deduplicate(this.hitCells);
+    const prev = priceHistory[i - 1];
+    const prevSlot = timestampToTimeSlot(prev.timestamp, liveStartTime);
+    const rows = getRowsBetween(prev.price, curr.price);
+
+    // Assign to current slot (and previous slot if boundary crossed)
+    for (const row of rows) {
+      hitMap.set(`${currSlot}:${row}`, { timeSlot: currSlot, priceRangeStart: row });
+      if (prevSlot >= 0 && prevSlot !== currSlot) {
+        hitMap.set(`${prevSlot}:${row}`, { timeSlot: prevSlot, priceRangeStart: row });
+      }
+    }
   }
+
+  return Array.from(hitMap.values());
 }
+```
+
+### 8.3 WebSocket Protocol
+
+The keeper broadcasts the following message types to subscribed frontends:
+
+| Message | When | Payload |
+|---------|------|---------|
+| `ROUND_START` | New round begins | roundId, timing (roundStart, bettingEnd, liveStart, liveEnd) |
+| `PHASE_CHANGE` | Phase transitions | roundId, new phase |
+| `PRICE_UPDATE` | Every 1s during LIVE | price, timestamp, timeSlot, hitCells (cumulative) |
+| `ROUND_END` | LIVE phase ends | final hitCells, full priceHistory |
+
+Frontends subscribe to a market via `{ type: "SUBSCRIBE", payload: { marketId } }`.
+
+### 8.4 GridCell Conversion (Keeper → Contract)
+
+The keeper uses `timeSlot` (0-based index) and `priceRangeStart` internally. The broker converts these to the contract's `timeSlotStart` (Unix timestamp) and `dataRangeStart` before calling `settleRound()`:
+
+```
+timeSlotStart  = liveStartTime + timeSlot * market.timeSlotWidth
+dataRangeStart = priceRangeStart
 ```
 
 ---
@@ -660,12 +810,33 @@ Onigo/
 │       │   ├── useBet.ts                — Bet signing via Yellow
 │       │   ├── useRound.ts              — Round phase tracking
 │       │   └── useENS.ts                — ENS resolution
-│       ├── lib/
-│       │   ├── yellow.ts                — Yellow SDK setup
-│       │   └── payout.ts                — Payout math (shared)
-│       └── server/
-│           ├── broker.ts                — Broker logic
-│           └── keeper.ts                — Price oracle tracker
+│       └── lib/
+│           ├── yellow.ts                — Yellow SDK setup
+│           └── payout.ts                — Payout math (shared)
+│
+├── keeper/                              — Keeper service (standalone)
+│   ├── src/
+│   │   ├── index.ts                     — Entry point (Express + WebSocket server)
+│   │   ├── keeper.ts                    — Price tracking, hit cell computation
+│   │   ├── priceSource.ts              — Price feed adapters (Chainlink, Binance, mock)
+│   │   └── wsServer.ts                 — WebSocket broadcast to frontends
+│   └── package.json
+│
+├── broker/                              — Broker service (standalone)
+│   ├── src/
+│   │   ├── index.ts                     — Main entry point (ClearNode auth, WebSocket API, bet recording)
+│   │   ├── types.ts                     — Shared types (GridCell, Bet, BetData, RoundBets, PayoutResult)
+│   │   ├── config.ts                    — Environment configuration
+│   │   ├── payout.ts                    — Parimutuel payout computation (Section 9 algorithm)
+│   │   ├── betManager.ts                — In-memory bet storage by market/round
+│   │   ├── settler.ts                   — On-chain settlement (USDC approval + settleRound)
+│   │   └── keeper.ts                    — HTTP client for fetching hit cells from keeper
+│   ├── demo-scripts/
+│   │   ├── demo.ts                      — Test client for placing bets
+│   │   ├── receiver.ts                  — Original receiver (reference implementation)
+│   │   ├── check-balance.ts             — Balance checker utility
+│   │   └── get-app-sessions.ts          — Session query utility
+│   └── package.json
 │
 ├── .github/
 ├── foundry.toml
@@ -682,16 +853,18 @@ Onigo/
 2. `Onigo.sol` — `settleRound()`, `claimPlayerPayout()`, `withdrawCommissions()`
 3. Contract tests — creating mock contracts, full round lifecycle, edge cases
 
-### Phase 2: Yellow Integration
-5. Yellow SDK setup — ClearNode connection, authentication
-6. Channel management — open, state updates, resize, close
-7. Broker service — co-sign bets, aggregate per round, submit settlement
-8. Bet signing flow — cumulative state data, fund allocation updates
+### Phase 2: Keeper Service
+4. Price feed polling (Chainlink, Binance, or mock source)
+5. Hit cell computation (graph traversal with interpolation)
+6. WebSocket server — broadcast ROUND_START, PHASE_CHANGE, PRICE_UPDATE, ROUND_END
+7. Round phase management (BETTING → LIVE → SETTLING timing)
 
-### Phase 3: Keeper
-9. Price feed polling (Chainlink or similar)
-10. Hit cell computation (graph traversal with interpolation)
-11. Integration with broker settlement flow
+### Phase 3: Broker Service + Yellow Integration
+8. Yellow SDK setup — ClearNode connection, authentication
+9. Channel management — open, state updates, resize, close
+10. Bet co-signing and validation
+11. Payout computation using hit cells from keeper
+12. On-chain settlement — GridCell conversion, settleRound() call, USDC approval
 
 ### Phase 4: Frontend
 12. Grid UI — interactive cell selection

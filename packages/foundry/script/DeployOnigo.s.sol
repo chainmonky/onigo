@@ -18,7 +18,7 @@ contract DeployOnigo is ScaffoldETHDeploy {
             deployments.push(Deployment("MockUSDC", usdc));
         } else {
             // TODO: set actual USDC address per chain
-            usdc = address(0);
+            usdc = 0xDB9F293e3898c9E5536A3be1b0C56c89d2b32DEb;
             require(usdc != address(0), "Set USDC address for this chain");
         }
 
