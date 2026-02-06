@@ -8,9 +8,7 @@
  * - Handles settlement when requested
  */
 
-import WebSocket from "ws";
-import { createServer } from "http";
-import { Server as SocketIOServer, Socket } from "socket.io";
+import WebSocket, { WebSocketServer } from "ws";
 import { ethers } from "ethers";
 import { createWalletClient, http, decodeAbiParameters, encodeAbiParameters, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -81,7 +79,7 @@ const keeperClient = new KeeperClient();
 function waitForMessage(
   ws: WebSocket,
   predicate: (msg: Record<string, unknown>) => boolean,
-  timeoutMs = 60000
+  timeoutMs = 15000
 ): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -182,7 +180,7 @@ let clearNodeWs: WebSocket | null = null;
 
 async function handleCreateSession(
   request: CreateSessionRequest,
-  socket: Socket
+  clientWs: WebSocket
 ): Promise<void> {
   const playerAddress = request.playerAddress as `0x${string}`;
   const amount = request.amount;
@@ -200,9 +198,10 @@ async function handleCreateSession(
   console.log(`   amount: ${amount}, marketId: ${marketId}, roundId: ${roundId}`);
 
   if (!clearNodeWs) {
-    socket.emit("session_error", {
+    clientWs.send(JSON.stringify({
+      type: "session_error",
       error: "Broker not connected to ClearNode",
-    });
+    }));
     return;
   }
 
@@ -258,9 +257,10 @@ async function handleCreateSession(
 
     console.log(`   App session created: ${appSessionId}`);
 
-    socket.emit("session_created", {
+    clientWs.send(JSON.stringify({
+      type: "session_created",
       appSessionId,
-    });
+    }));
 
     // Auto-close session to transfer funds to broker (one session per bet)
     console.log(`\n   [AUTO-CLOSE] Closing session to transfer funds to broker...`);
@@ -284,9 +284,10 @@ async function handleCreateSession(
 
   } catch (err) {
     console.error(`   Error creating session:`, err);
-    socket.emit("session_error", {
+    clientWs.send(JSON.stringify({
+      type: "session_error",
       error: err instanceof Error ? err.message : String(err),
-    });
+    }));
   }
 }
 
@@ -331,7 +332,7 @@ async function handleCloseSession(request: CloseSessionRequest): Promise<void> {
   }
 }
 
-async function handleSettleRound(request: SettleRoundRequest, socket: Socket): Promise<void> {
+async function handleSettleRound(request: SettleRoundRequest, clientWs: WebSocket): Promise<void> {
   const { marketId, roundId } = request;
   console.log(`\n[SETTLE ROUND] market=${marketId} round=${roundId}`);
 
@@ -339,9 +340,10 @@ async function handleSettleRound(request: SettleRoundRequest, socket: Socket): P
     // Get all bets for this round
     const roundBets = betManager.getRoundBets(marketId, roundId);
     if (!roundBets || roundBets.bets.length === 0) {
-      socket.emit("settle_error", {
+      clientWs.send(JSON.stringify({
+        type: "settle_error",
         error: "No bets found for this round",
-      });
+      }));
       return;
     }
 
@@ -375,19 +377,21 @@ async function handleSettleRound(request: SettleRoundRequest, socket: Socket): P
     // Clear the round from memory
     betManager.clearRound(marketId, roundId);
 
-    socket.emit("round_settled", {
+    clientWs.send(JSON.stringify({
+      type: "round_settled",
       marketId,
       roundId,
       txHash,
       winners: payoutResult.players.length,
       totalPayout: payoutResult.totalPayout.toString(),
-    });
+    }));
 
   } catch (err) {
     console.error(`   Error settling round:`, err);
-    socket.emit("settle_error", {
+    clientWs.send(JSON.stringify({
+      type: "settle_error",
       error: err instanceof Error ? err.message : String(err),
-    });
+    }));
   }
 }
 
@@ -483,103 +487,63 @@ async function main() {
     console.log("   WARNING: Not authorized as broker on contract!\n");
   }
 
-  // 5. Start broker API server with Socket.IO
-  const httpServer = createServer();
-  const io = new SocketIOServer(httpServer, {
-    cors: {
-      origin: "*",
-      methods: ["GET", "POST"],
-    },
-  });
+  // 5. Start broker API server
+  const wss = new WebSocketServer({ port: config.BROKER_API_PORT });
+  console.log(`5. Broker API listening on port ${config.BROKER_API_PORT}\n`);
 
-  httpServer.listen(config.BROKER_API_PORT, () => {
-    console.log(`5. Broker API (Socket.IO) listening on port ${config.BROKER_API_PORT}\n`);
-  });
+  wss.on("connection", (clientWs) => {
+    console.log("[API] Client connected");
 
-  io.on("connection", (socket) => {
-    console.log(`[API] Client connected: ${socket.id}`);
-
-    socket.on("create_session", async (data: CreateSessionRequest) => {
-      console.log(`[API] Received: create_session`);
-      await handleCreateSession(data, socket);
-    });
-
-    socket.on("close_session", async (data: CloseSessionRequest) => {
-      console.log(`[API] Received: close_session`);
-      await handleCloseSession(data);
-      socket.emit("session_closed", {});
-    });
-
-    socket.on("settle_round", async (data: SettleRoundRequest) => {
-      console.log(`[API] Received: settle_round`);
-      await handleSettleRound(data, socket);
-    });
-
-    socket.on("get_sessions", () => {
-      console.log(`[API] Received: get_sessions`);
-      const sessions = Array.from(playerSessions.entries()).map(([addr, s]) => ({
-        playerAddress: addr,
-        appSessionId: s.appSessionId,
-        marketId: s.marketId,
-        roundId: s.roundId.toString(),
-        betsCount: s.bets.length,
-      }));
-      socket.emit("sessions", { sessions });
-    });
-
-    socket.on("get_bets", () => {
-      console.log(`[API] Received: get_bets`);
-      const summary = betManager.getSummary();
-      socket.emit("bets", { rounds: summary });
-    });
-
-    socket.on("get_broker_address", () => {
-      console.log(`[API] Received: get_broker_address`);
-      socket.emit("broker_address", { address: BROKER_ADDRESS });
-    });
-
-    socket.on("get_balance", async (data: { address?: string }) => {
-      console.log(`[API] Received: get_balance for ${data?.address || "broker"}`);
-
-      if (!clearNodeWs) {
-        socket.emit("balance_error", { error: "Not connected to ClearNode" });
-        return;
-      }
-
+    clientWs.on("message", async (data) => {
+      const raw = typeof data === "string" ? data : data.toString();
       try {
-        // Query ledger balance from ClearNode
-        const balMsg = await createGetLedgerBalancesMessage(messageSigner);
-        const balPromise = waitForMessage(clearNodeWs, (m) => {
-          const r = m.res as unknown[];
-          return r?.[1] === "get_ledger_balances";
-        });
-        clearNodeWs.send(balMsg);
-        const balResp = await balPromise;
-        const balData = (balResp.res as unknown[])[2] as Record<string, unknown>;
-        const balances = (balData?.ledger_balances ?? balData?.balances) as Record<string, unknown>[] | undefined;
-        const yusd = balances?.find((b) => b.asset === "ytest.usd");
-        const amount = (yusd?.amount as string) ?? "0";
+        const msg = JSON.parse(raw);
+        console.log(`[API] Received: ${msg.type}`);
 
-        socket.emit("balance", {
-          address: BROKER_ADDRESS,
-          asset: "ytest.usd",
-          amount,
-          formatted: (parseInt(amount) / 1000000).toFixed(2),
-        });
+        switch (msg.type) {
+          case "create_session":
+            await handleCreateSession(msg as CreateSessionRequest, clientWs);
+            break;
+
+          case "close_session":
+            await handleCloseSession(msg as CloseSessionRequest);
+            clientWs.send(JSON.stringify({ type: "session_closed" }));
+            break;
+
+          case "settle_round":
+            await handleSettleRound(msg as SettleRoundRequest, clientWs);
+            break;
+
+          case "get_sessions":
+            const sessions = Array.from(playerSessions.entries()).map(([addr, s]) => ({
+              playerAddress: addr,
+              appSessionId: s.appSessionId,
+              marketId: s.marketId,
+              roundId: s.roundId.toString(),
+              betsCount: s.bets.length,
+            }));
+            clientWs.send(JSON.stringify({ type: "sessions", sessions }));
+            break;
+
+          case "get_bets":
+            const summary = betManager.getSummary();
+            clientWs.send(JSON.stringify({ type: "bets", rounds: summary }));
+            break;
+
+          case "get_broker_address":
+            clientWs.send(JSON.stringify({ type: "broker_address", address: BROKER_ADDRESS }));
+            break;
+
+          default:
+            console.log(`[API] Unknown message type: ${msg.type}`);
+        }
       } catch (err) {
-        console.error("[API] Error getting balance:", err);
-        socket.emit("balance_error", {
-          error: err instanceof Error ? err.message : "Failed to get balance",
-        });
+        console.error("[API] Error processing message:", err);
       }
     });
 
-    socket.on("disconnect", () => {
-      console.log(`[API] Client disconnected: ${socket.id}`);
-    });
-
-    socket.on("error", (err) => {
-      console.error("[API] Socket error:", err);
+    clientWs.on("close", () => {
+      console.log("[API] Client disconnected");
     });
   });
 
@@ -629,8 +593,7 @@ async function main() {
   process.on("SIGINT", () => {
     console.log("\nShutting down...");
     ws.close();
-    io.close();
-    httpServer.close();
+    wss.close();
     process.exit(0);
   });
 }

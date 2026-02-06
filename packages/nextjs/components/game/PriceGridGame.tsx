@@ -19,30 +19,12 @@ export function PriceGridGame() {
       <CyberpunkNavbar />
 
       {/* Main content */}
-      <main className="w-full px-4 py-4">
-        <div className="w-full flex flex-col gap-4">
+      <main className="w-full px-4 py-2">
+        <div className="w-full flex flex-col xl:flex-row gap-4">
           {/* Main - Unified Chart + Grid */}
-          <motion.section className="!w-full" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
+          <motion.section className="max-w-8xl" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
             <div className="card bg-base-100 shadow-lg">
               <div className="card-body p-4">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-4">
-                    <h2 className="card-title text-lg">Price Prediction</h2>
-                    {currentRound?.currentPrice && (
-                      <div className="badge badge-primary font-mono">${currentRound.currentPrice.toLocaleString()}</div>
-                    )}
-                  </div>
-                  {currentRound?.phase === "BETTING" && (
-                    <div className="badge badge-primary badge-outline animate-pulse">Click cells to bet</div>
-                  )}
-                  {currentRound?.phase === "LIVE" && (
-                    <div className="badge badge-success badge-outline">Watching price...</div>
-                  )}
-                  {currentRound?.phase === "SETTLING" && (
-                    <div className="badge badge-warning badge-outline">Settling...</div>
-                  )}
-                </div>
-
                 {/* Unified Chart + Grid */}
                 <ChartWithGrid />
 
@@ -65,10 +47,6 @@ export function PriceGridGame() {
                       <div className="w-4 h-4 bg-success rounded" />
                       <span>Win!</span>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-4 h-3 bg-primary rounded-sm" />
-                      <span>Price Line</span>
-                    </div>
                   </div>
                 </div>
               </div>
@@ -77,7 +55,7 @@ export function PriceGridGame() {
 
           {/* Right sidebar - Controls */}
           <motion.aside
-            className="w-full flex flex-col xl:flex-row gap-4"
+            className="w-full max-w-[40rem] flex flex-row xl:flex-col gap-4"
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
           >

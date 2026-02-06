@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { ConnectionStatus } from "./ConnectionStatus";
+import { WalletStatus } from "./WalletStatus";
 import { motion } from "framer-motion";
 import { cn } from "~~/lib/utils";
 import { useGameStore } from "~~/store/gameStore";
@@ -120,6 +121,16 @@ export function CyberpunkNavbar() {
                   </span>
                 </div>
 
+                {/* Current price */}
+                {currentRound?.currentPrice && (
+                  <div className="hidden lg:flex items-center gap-2 px-3 py-1 rounded-lg bg-gray-800/50 border border-gray-700/50">
+                    <span className="text-xs text-gray-500">BTC</span>
+                    <span className="font-[family-name:var(--font-share-tech-orbitron)] text-[#20E3B2] font-bold">
+                      ${currentRound.currentPrice.toLocaleString()}
+                    </span>
+                  </div>
+                )}
+
                 {/* Phase badge */}
                 <div
                   className={cn(
@@ -175,26 +186,21 @@ export function CyberpunkNavbar() {
 
           {/* Right - Info */}
           <div className="flex items-center gap-3">
-            {/* Current price */}
-            {currentRound?.currentPrice && (
-              <div className="hidden lg:flex items-center gap-2 px-3 py-1 rounded-lg bg-gray-800/50 border border-gray-700/50">
-                <span className="text-xs text-gray-500">BTC</span>
-                <span className="font-[family-name:var(--font-share-tech-orbitron)] text-[#20E3B2] font-bold">
-                  ${currentRound.currentPrice.toLocaleString()}
-                </span>
-              </div>
-            )}
-
             {/* Market ID */}
             <div className="hidden sm:flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-800/30 border border-gray-700/30">
               <div className="w-1.5 h-1.5 rounded-full bg-[#20E3B2] animate-pulse" />
               <span className="text-xs font-[family-name:var(--font-share-tech-orbitron)] text-gray-400">
-                M{marketId}
+                Market {marketId}
               </span>
             </div>
 
-            {/* Connection status */}
-            <ConnectionStatus />
+            {/* Connection status (Keeper) */}
+            <div className="hidden md:block">
+              <ConnectionStatus />
+            </div>
+
+            {/* Wallet Status */}
+            <WalletStatus />
           </div>
         </div>
 

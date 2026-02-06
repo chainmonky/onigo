@@ -3,8 +3,9 @@
  */
 
 // WebSocket URLs
-export const KEEPER_WS_URL = process.env.NEXT_PUBLIC_KEEPER_URL ?? "ws://localhost:3001";
-export const BROKER_WS_URL = process.env.NEXT_PUBLIC_BROKER_URL ?? "ws://localhost:3002";
+// Socket.IO handles protocol upgrade automatically, so we use http:// URLs
+export const KEEPER_WS_URL = process.env.NEXT_PUBLIC_KEEPER_URL ?? "http://localhost:3001";
+export const BROKER_WS_URL = process.env.NEXT_PUBLIC_BROKER_URL ?? "http://localhost:3002";
 
 // Default Market ID
 export const DEFAULT_MARKET_ID = 1;

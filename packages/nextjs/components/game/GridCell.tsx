@@ -1,6 +1,8 @@
 "use client";
 
+import { useConnectModal } from "@rainbow-me/rainbowkit";
 import { AnimatePresence, motion } from "framer-motion";
+import { useAccount } from "wagmi";
 import type { BetCell } from "~~/lib/game/types";
 import { cn } from "~~/lib/utils";
 import { useGameStore } from "~~/store/gameStore";
@@ -13,7 +15,9 @@ type GridCellProps = {
 };
 
 export function GridCell({ priceRangeStart, timeSlotStart, rowIndex, colIndex }: GridCellProps) {
-  const { currentRound, selectedBetAmount, toggleCellBet, isCellSelected, isCellHit } = useGameStore();
+  const { currentRound, selectedBetAmount, toggleCellBet, isCellSelected, isCellHit, addToast } = useGameStore();
+  const { isConnected } = useAccount();
+  const { openConnectModal } = useConnectModal();
 
   const cell: BetCell = {
     dataRangeStart: priceRangeStart,
@@ -25,9 +29,21 @@ export function GridCell({ priceRangeStart, timeSlotStart, rowIndex, colIndex }:
   const isBettingPhase = currentRound?.phase === "BETTING";
   const isLivePhase = currentRound?.phase === "LIVE";
   const isWinning = isHit && isSelected && isLivePhase;
+  const canBet = isConnected && isBettingPhase;
 
   const handleClick = () => {
     if (!isBettingPhase) return;
+
+    // If not connected, prompt to connect
+    if (!isConnected) {
+      addToast({
+        type: "info",
+        message: "Connect your wallet to place bets",
+      });
+      openConnectModal?.();
+      return;
+    }
+
     toggleCellBet(cell);
   };
   const config = currentRound?.config;
@@ -54,13 +70,14 @@ export function GridCell({ priceRangeStart, timeSlotStart, rowIndex, colIndex }:
         isHit &&
           isSelected &&
           "bg-gradient-to-br from-emerald-400 to-teal-500 text-white shadow-2xl border-yellow-400 border-2",
-        isBettingPhase && "cursor-pointer hover:scale-[1.02]",
+        canBet && "cursor-pointer hover:scale-[1.02]",
+        isBettingPhase && !isConnected && "cursor-pointer opacity-70",
         !isBettingPhase && "cursor-default",
       )}
       onClick={handleClick}
       disabled={!isBettingPhase}
-      whileHover={isBettingPhase ? { scale: 1.02 } : undefined}
-      whileTap={isBettingPhase ? { scale: 0.98 } : undefined}
+      whileHover={canBet ? { scale: 1.02 } : undefined}
+      whileTap={canBet ? { scale: 0.98 } : undefined}
       initial={{ opacity: 0, scale: 0.9 }}
       animate={
         isWinning

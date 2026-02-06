@@ -3581,6 +3581,8 @@ __metadata:
     "@types/ws": ^8.5.0
     dotenv: ^16.4.0
     ethers: ^6.13.0
+    socket.io: ^4.8.3
+    socket.io-client: ^4.8.3
     tsup: ^8.3.0
     tsx: ^4.19.0
     typescript: ~5.8.2
@@ -3618,6 +3620,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@se-2/nextjs@workspace:packages/nextjs"
   dependencies:
+    "@erc7824/nitrolite": ^0.5.3
     "@heroicons/react": ~2.1.5
     "@radix-ui/react-slot": ^1.2.4
     "@rainbow-me/rainbowkit": 2.2.9
@@ -15434,7 +15437,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"socket.io@npm:^4.8.0":
+"socket.io@npm:^4.8.0, socket.io@npm:^4.8.3":
   version: 4.8.3
   resolution: "socket.io@npm:4.8.3"
   dependencies:

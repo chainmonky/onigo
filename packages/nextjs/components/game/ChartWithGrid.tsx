@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GridCell } from "./GridCell";
-import { motion } from "framer-motion";
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { GRID_CONFIG } from "~~/lib/game/constants";
 import { useGameStore } from "~~/store/gameStore";
@@ -162,7 +161,7 @@ export function ChartWithGrid() {
   return (
     <div className="w-full overflow-x-auto">
       <div className="flex items-start">
-        <div className="shrink-0 relative" style={{ width: 500, height: gridHeight }}>
+        <div className="shrink-0 relative" style={{ width: 300, maxWidth: 600, height: gridHeight }}>
           {isLoading && historicalData.length === 0 ? (
             <div className="absolute inset-0 flex items-center justify-center bg-base-200/50">
               <div className="loading loading-spinner loading-sm text-primary"></div>
@@ -281,19 +280,6 @@ export function ChartWithGrid() {
           <div style={{ height: cellHeight }} />
         </div>
       </div>
-
-      {currentPrice && (
-        <motion.div
-          className="mt-4 flex items-center justify-center"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-        >
-          <div className="badge badge-primary badge-lg gap-2 font-mono">
-            <span className="text-xs opacity-70">Current:</span>
-            <span className="font-bold">${currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-          </div>
-        </motion.div>
-      )}
     </div>
   );
 }
