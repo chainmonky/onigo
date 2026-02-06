@@ -24,6 +24,7 @@
 
 import "dotenv/config";
 import WebSocket from "ws";
+import { io, Socket } from "socket.io-client";
 import { ethers } from "ethers";
 import {
   createPublicClient,
@@ -42,8 +43,8 @@ import { RPCProtocolVersion } from "@erc7824/nitrolite";
 
 const PLAYER_PRIVATE_KEY = process.env.PLAYER_PRIVATE_KEY ?? process.env.SENDER_PRIVATE_KEY;
 const BROKER_PRIVATE_KEY = process.env.RECEIVER_PRIVATE_KEY; // For market creation (owner)
-const BROKER_URL = process.env.BROKER_URL ?? "ws://localhost:3001";
-const KEEPER_URL = process.env.KEEPER_URL ?? "ws://localhost:3002";
+const BROKER_URL = process.env.BROKER_URL ?? "ws://localhost:3002";
+const KEEPER_URL = process.env.KEEPER_URL ?? "ws://localhost:3001";
 const BET_AMOUNT = process.env.BET_AMOUNT ?? "10000"; // 0.01 USDC (6 decimals) - very small test amount
 const MARKET_ID = parseInt(process.env.MARKET_ID ?? "1");
 const RPC_URL = process.env.RPC_URL ?? "https://base-sepolia-rpc.publicnode.com";
@@ -239,9 +240,8 @@ type KeeperMessage =
   | { type: "PRICE_UPDATE"; payload: KeeperPriceUpdatePayload }
   | { type: "ROUND_END"; payload: KeeperRoundEndPayload };
 
-// Broker message types
+// Broker message types (Socket.IO event payloads - no 'type' field needed)
 interface BrokerRoundSettled {
-  type: "round_settled";
   marketId: number;
   roundId: number;
   txHash: string;
@@ -280,7 +280,7 @@ interface BetCell {
 }
 
 interface SimulationState {
-  brokerWs: WebSocket | null;
+  brokerSocket: Socket | null;
   keeperWs: WebSocket | null;
   brokerAddress: `0x${string}` | null;
   currentRound: {
@@ -300,7 +300,7 @@ interface SimulationState {
 }
 
 const state: SimulationState = {
-  brokerWs: null,
+  brokerSocket: null,
   keeperWs: null,
   brokerAddress: null,
   currentRound: null,
@@ -316,50 +316,51 @@ const state: SimulationState = {
 
 async function connectToBroker(): Promise<void> {
   console.log("\n" + "=".repeat(60));
-  console.log("STEP 1: Connecting to Broker Service");
+  console.log("STEP 1: Connecting to Broker Service (Socket.IO)");
   console.log("=".repeat(60));
   console.log(`Broker URL: ${BROKER_URL}`);
 
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(BROKER_URL);
+    const socket = io(BROKER_URL, {
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      timeout: 10000,
+    });
 
-    ws.on("open", () => {
-      console.log("  Connected to Broker.");
-      state.brokerWs = ws;
+    socket.on("connect", () => {
+      console.log("  Connected to Broker via Socket.IO.");
+      state.brokerSocket = socket;
       resolve();
     });
 
-    ws.on("error", (err) => {
+    socket.on("connect_error", (err) => {
       console.error("  Broker connection error:", err.message);
       reject(err);
     });
 
-    ws.on("close", () => {
-      console.log("  Broker connection closed.");
-      state.brokerWs = null;
+    socket.on("disconnect", (reason) => {
+      console.log("  Broker connection closed:", reason);
+      state.brokerSocket = null;
     });
   });
 }
 
 async function getBrokerAddress(): Promise<void> {
-  if (!state.brokerWs) throw new Error("Broker not connected");
+  if (!state.brokerSocket) throw new Error("Broker not connected");
 
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error("Timeout getting broker address")), 10000);
 
-    state.brokerWs!.once("message", (data) => {
+    state.brokerSocket!.once("broker_address", (data: { address: `0x${string}` }) => {
       clearTimeout(timeout);
-      const msg = JSON.parse(data.toString());
-      if (msg.type === "broker_address") {
-        state.brokerAddress = msg.address;
-        console.log(`  Broker address: ${state.brokerAddress}`);
-        resolve();
-      } else {
-        reject(new Error(`Unexpected response: ${msg.type}`));
-      }
+      state.brokerAddress = data.address;
+      console.log(`  Broker address: ${state.brokerAddress}`);
+      resolve();
     });
 
-    state.brokerWs!.send(JSON.stringify({ type: "get_broker_address" }));
+    state.brokerSocket!.emit("get_broker_address");
   });
 }
 
@@ -421,7 +422,7 @@ async function subscribeToMarket(): Promise<void> {
 // ============================================================================
 
 async function placeBet(roundId: number, gridBounds: KeeperRoundStartPayload["gridBounds"]): Promise<void> {
-  if (!state.brokerWs || !state.brokerAddress || !state.currentRound?.config) {
+  if (!state.brokerSocket || !state.brokerAddress || !state.currentRound?.config) {
     throw new Error("Broker not connected or round config not available");
   }
 
@@ -522,7 +523,6 @@ async function placeBet(roundId: number, gridBounds: KeeperRoundStartPayload["gr
   console.log(`  Player signature: ${playerSignature.slice(0, 20)}...`);
 
   const createRequest = {
-    type: "create_session",
     playerAddress: PLAYER_ADDRESS,
     amount: BET_AMOUNT,
     marketId: MARKET_ID.toString(),
@@ -533,28 +533,29 @@ async function placeBet(roundId: number, gridBounds: KeeperRoundStartPayload["gr
   };
 
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("Timeout creating session")), 30000);
+    const timeout = setTimeout(() => reject(new Error("Timeout creating session")), 60000);
 
-    state.brokerWs!.once("message", (data) => {
+    const handleCreated = (data: { appSessionId: string }) => {
       clearTimeout(timeout);
-      const msg = JSON.parse(data.toString());
+      state.brokerSocket!.off("session_error", handleError);
+      state.appSessionId = data.appSessionId;
+      state.betPlaced = true;
+      console.log(`  Session created: ${data.appSessionId}`);
+      console.log("  Bet placed successfully!");
+      resolve();
+    };
 
-      if (msg.type === "session_error") {
-        console.error(`  Error: ${msg.error}`);
-        reject(new Error(msg.error));
-        return;
-      }
+    const handleError = (data: { error: string }) => {
+      clearTimeout(timeout);
+      state.brokerSocket!.off("session_created", handleCreated);
+      console.error(`  Error: ${data.error}`);
+      reject(new Error(data.error));
+    };
 
-      if (msg.type === "session_created") {
-        state.appSessionId = msg.appSessionId;
-        state.betPlaced = true;
-        console.log(`  Session created: ${msg.appSessionId}`);
-        console.log("  Bet placed successfully!");
-        resolve();
-      }
-    });
+    state.brokerSocket!.once("session_created", handleCreated);
+    state.brokerSocket!.once("session_error", handleError);
 
-    state.brokerWs!.send(JSON.stringify(createRequest));
+    state.brokerSocket!.emit("create_session", createRequest);
   });
 }
 
@@ -780,7 +781,7 @@ function printHitCellsVisualization(
 // ============================================================================
 
 async function triggerSettlement(roundId: number, hitCells: { timeSlotStart: string; dataRangeStart: string }[]): Promise<void> {
-  if (!state.brokerWs) {
+  if (!state.brokerSocket) {
     console.error("Broker not connected for settlement");
     return;
   }
@@ -798,35 +799,32 @@ async function triggerSettlement(roundId: number, hitCells: { timeSlotStart: str
       resolve();
     }, 60000);
 
-    state.brokerWs!.once("message", (data) => {
+    const handleSettled = (data: BrokerRoundSettled) => {
       clearTimeout(timeout);
-      const msg = JSON.parse(data.toString());
+      state.brokerSocket!.off("settle_error", handleError);
+      console.log("  Settlement successful!");
+      console.log(`    TX Hash: ${data.txHash}`);
+      console.log(`    Winners: ${data.winners}`);
+      console.log(`    Total Payout: ${data.totalPayout}`);
+      resolve();
+    };
 
-      if (msg.type === "settle_error") {
-        console.log(`  Settlement error: ${msg.error}`);
-        console.log("  (This is expected in demo mode without on-chain contract)");
-        resolve();
-        return;
-      }
+    const handleError = (data: { error: string }) => {
+      clearTimeout(timeout);
+      state.brokerSocket!.off("round_settled", handleSettled);
+      console.log(`  Settlement error: ${data.error}`);
+      console.log("  (This is expected in demo mode without on-chain contract)");
+      resolve();
+    };
 
-      if (msg.type === "round_settled") {
-        const settled = msg as BrokerRoundSettled;
-        console.log("  Settlement successful!");
-        console.log(`    TX Hash: ${settled.txHash}`);
-        console.log(`    Winners: ${settled.winners}`);
-        console.log(`    Total Payout: ${settled.totalPayout}`);
-        resolve();
-      }
+    state.brokerSocket!.once("round_settled", handleSettled);
+    state.brokerSocket!.once("settle_error", handleError);
+
+    state.brokerSocket!.emit("settle_round", {
+      marketId: MARKET_ID,
+      roundId,
+      hitCells,
     });
-
-    state.brokerWs!.send(
-      JSON.stringify({
-        type: "settle_round",
-        marketId: MARKET_ID,
-        roundId,
-        hitCells,
-      })
-    );
   });
 }
 
@@ -979,14 +977,14 @@ async function main(): Promise<void> {
     await new Promise((resolve) => {
       process.on("SIGINT", () => {
         console.log("\n\nShutting down...");
-        state.brokerWs?.close();
+        state.brokerSocket?.disconnect();
         state.keeperWs?.close();
         resolve(undefined);
       });
     });
   } catch (err) {
     console.error("\nSimulation error:", err);
-    state.brokerWs?.close();
+    state.brokerSocket?.disconnect();
     state.keeperWs?.close();
     process.exit(1);
   }
