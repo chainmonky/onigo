@@ -351,14 +351,14 @@ async function handleSettleRound(request: SettleRoundRequest, clientWs: WebSocke
 
     // Get hit cells from keeper (or mock if unavailable)
     let hitCells: GridCell[];
-    const keeperAvailable = await keeperClient.healthCheck();
+    // const keeperAvailable = await keeperClient.healthCheck(); //TODO:Change this
 
-    if (keeperAvailable) {
+    // if (keeperAvailable) {
       hitCells = await keeperClient.getHitCells(marketId, roundId);
-    } else {
-      console.log(`   Keeper unavailable, using mock hit cells`);
-      hitCells = getMockHitCells(marketId, roundId);
-    }
+    // } else {
+    //   console.log(`   Keeper unavailable, using mock hit cells`);
+    //   hitCells = getMockHitCells(marketId, roundId);
+    // }
 
     console.log(`   Hit cells: ${hitCells.length}`);
 

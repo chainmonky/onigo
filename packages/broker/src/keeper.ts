@@ -120,8 +120,8 @@ export function getMockHitCells(marketId: number, roundId: number, count = 5): G
 
   for (let i = 0; i < count; i++) {
     cells.push({
-      timeSlotStart: baseTime + BigInt(i * 60), // 60 second slots
-      dataRangeStart: BigInt(3000 + i * 100), // Mock price ranges
+      timeSlotStart: baseTime + BigInt(i * 10), // 60 second slots
+      dataRangeStart: BigInt(3000 + i * 200), // Mock price ranges
     });
   }
 

@@ -1,94 +1,148 @@
-import { WebSocketServer as WSServer, WebSocket } from "ws";
+import { Server as SocketIOServer, Socket } from "socket.io";
 
-export type OnSubscribeCallback = (marketId: number, ws: WebSocket) => void;
+export type OnSubscribeCallback = (marketId: number, socket: Socket) => void;
 
 export class WebSocketServer {
-  private wss: WSServer;
-  private subscriptions = new Map<number, Set<WebSocket>>();
+  private io: SocketIOServer;
+  private subscriptions = new Map<number, Set<Socket>>();
+  private priceStreamSubscriptions = new Map<number, Set<Socket>>();
   private onSubscribeCallback: OnSubscribeCallback | null = null;
 
   constructor(port: number) {
-    this.wss = new WSServer({ port });
-    console.log(`[WS] Server started on port ${port}`);
+    this.io = new SocketIOServer(port, {
+      cors: {
+        origin: "*",
+        methods: ["GET", "POST"],
+      },
+      transports: ["websocket", "polling"],
+    });
+    console.log(`[WS] Socket.IO server started on port ${port}`);
 
-    this.wss.on("connection", (ws) => {
-      console.log(`[WS] Client connected`);
+    this.io.on("connection", (socket) => {
+      console.log(`[WS] Client connected: ${socket.id}`);
 
-      ws.on("message", (data) => {
-        try {
-          const msg = JSON.parse(data.toString()) as {
-            type: string;
-            payload?: { marketId?: number };
-          };
-          if (msg.type === "SUBSCRIBE" && msg.payload?.marketId !== undefined) {
-            this.subscribe(ws, msg.payload.marketId);
-          } else if (msg.type === "UNSUBSCRIBE" && msg.payload?.marketId !== undefined) {
-            this.unsubscribe(ws, msg.payload.marketId);
-          }
-        } catch (err) {
-          console.error("[WS] Failed to parse message:", err);
+      socket.on("SUBSCRIBE", (data: { marketId?: number }) => {
+        if (data?.marketId !== undefined) {
+          this.subscribe(socket, data.marketId);
         }
       });
 
-      ws.on("close", () => {
-        console.log(`[WS] Client disconnected`);
-        this.removeClient(ws);
+      socket.on("UNSUBSCRIBE", (data: { marketId?: number }) => {
+        if (data?.marketId !== undefined) {
+          this.unsubscribe(socket, data.marketId);
+        }
       });
 
-      ws.on("error", (err) => {
+      // Price stream subscription - lightweight price-only updates
+      socket.on("SUBSCRIBE_PRICE_STREAM", (data: { marketId?: number }) => {
+        if (data?.marketId !== undefined) {
+          this.subscribePriceStream(socket, data.marketId);
+        }
+      });
+
+      socket.on("UNSUBSCRIBE_PRICE_STREAM", (data: { marketId?: number }) => {
+        if (data?.marketId !== undefined) {
+          this.unsubscribePriceStream(socket, data.marketId);
+        }
+      });
+
+      socket.on("disconnect", (reason) => {
+        console.log(`[WS] Client disconnected: ${socket.id} (${reason})`);
+        this.removeClient(socket);
+      });
+
+      socket.on("error", (err) => {
         console.error("[WS] Client error:", err);
       });
 
-      ws.send(JSON.stringify({ type: "CONNECTED" }));
+      socket.emit("CONNECTED");
     });
   }
 
-  private subscribe(ws: WebSocket, marketId: number) {
+  private subscribe(socket: Socket, marketId: number) {
     if (!this.subscriptions.has(marketId)) {
       this.subscriptions.set(marketId, new Set());
     }
-    this.subscriptions.get(marketId)!.add(ws);
-    ws.send(JSON.stringify({ type: "SUBSCRIBED", payload: { marketId } }));
-    console.log(`[WS] Client subscribed to market ${marketId}`);
+    this.subscriptions.get(marketId)!.add(socket);
+    socket.emit("SUBSCRIBED", { marketId });
+    console.log(`[WS] Client ${socket.id} subscribed to market ${marketId}`);
     if (this.onSubscribeCallback) {
-      this.onSubscribeCallback(marketId, ws);
+      this.onSubscribeCallback(marketId, socket);
     }
+  }
+
+  private subscribePriceStream(socket: Socket, marketId: number) {
+    if (!this.priceStreamSubscriptions.has(marketId)) {
+      this.priceStreamSubscriptions.set(marketId, new Set());
+    }
+    this.priceStreamSubscriptions.get(marketId)!.add(socket);
+    socket.emit("PRICE_STREAM_SUBSCRIBED", { marketId });
+    console.log(`[WS] Client ${socket.id} subscribed to price stream for market ${marketId}`);
+  }
+
+  private unsubscribePriceStream(socket: Socket, marketId: number) {
+    this.priceStreamSubscriptions.get(marketId)?.delete(socket);
+    console.log(`[WS] Client ${socket.id} unsubscribed from price stream for market ${marketId}`);
   }
 
   onSubscribe(callback: OnSubscribeCallback) {
     this.onSubscribeCallback = callback;
   }
 
-  sendToClient(ws: WebSocket, message: unknown) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(message));
-    }
+  sendToClient(socket: Socket, message: unknown) {
+    const msg = message as { type: string; payload: unknown };
+    socket.emit(msg.type, msg.payload);
   }
 
-  private unsubscribe(ws: WebSocket, marketId: number) {
-    this.subscriptions.get(marketId)?.delete(ws);
-    console.log(`[WS] Client unsubscribed from market ${marketId}`);
+  private unsubscribe(socket: Socket, marketId: number) {
+    this.subscriptions.get(marketId)?.delete(socket);
+    console.log(`[WS] Client ${socket.id} unsubscribed from market ${marketId}`);
   }
 
-  private removeClient(ws: WebSocket) {
+  private removeClient(socket: Socket) {
     for (const clients of this.subscriptions.values()) {
-      clients.delete(ws);
+      clients.delete(socket);
+    }
+    for (const clients of this.priceStreamSubscriptions.values()) {
+      clients.delete(socket);
     }
   }
 
   broadcast(marketId: number, message: unknown) {
-    const data = JSON.stringify(message);
     const clients = this.subscriptions.get(marketId);
     if (clients) {
       let sentCount = 0;
-      for (const ws of clients) {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(data);
+      const msg = message as { type: string; payload: unknown };
+      for (const socket of clients) {
+        if (socket.connected) {
+          socket.emit(msg.type, msg.payload);
           sentCount++;
         }
       }
       if (sentCount > 0) {
-        console.log(`[WS] Broadcast to ${sentCount} clients for market ${marketId}`);
+        console.log(`[WS] Broadcast ${msg.type} to ${sentCount} clients for market ${marketId}`);
+      }
+    }
+  }
+
+  // Broadcast price-only updates to price stream subscribers
+  broadcastPriceStream(marketId: number, priceData: { price: number; timestamp: number; source: string }) {
+    const clients = this.priceStreamSubscriptions.get(marketId);
+    if (clients) {
+      let sentCount = 0;
+      for (const socket of clients) {
+        if (socket.connected) {
+          socket.emit("PRICE_TICK", {
+            marketId,
+            price: priceData.price,
+            timestamp: priceData.timestamp,
+            source: priceData.source,
+          });
+          sentCount++;
+        }
+      }
+      if (sentCount > 0) {
+        console.log(`[WS] Price tick to ${sentCount} stream clients: $${priceData.price.toLocaleString()}`);
       }
     }
   }
@@ -97,8 +151,12 @@ export class WebSocketServer {
     return this.subscriptions.get(marketId)?.size || 0;
   }
 
+  getPriceStreamClientCount(marketId: number): number {
+    return this.priceStreamSubscriptions.get(marketId)?.size || 0;
+  }
+
   close() {
-    this.wss.close();
+    this.io.close();
     console.log("[WS] Server closed");
   }
 }

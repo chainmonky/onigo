@@ -1,3 +1,4 @@
+import type { Socket } from "socket.io";
 import type {
   MarketConfig,
   PriceDataPoint,
@@ -11,7 +12,7 @@ import type {
 import { RoundPhase } from "./types.js";
 import type { PriceFetcher } from "./priceFetcher.js";
 import { deriveHitCells } from "./gridDeriver.js";
-import { calculateGridBounds, type GridBounds } from "./gridBounds.js";
+import { calculateGridBounds } from "./gridBounds.js";
 import type { WebSocketServer } from "./wsServer.js";
 
 export class Keeper {
@@ -36,7 +37,7 @@ export class Keeper {
     });
   }
 
-  private sendCurrentStateToClient(ws: import("ws").WebSocket) {
+  private sendCurrentStateToClient(ws: Socket) {
     if (!this.currentRound) return;
 
     const hitCells = deriveHitCells(
@@ -234,6 +235,7 @@ export class Keeper {
         },
       };
       this.broadcast(message);
+      this.wsServer.broadcastPriceStream(this.market.marketId, priceData);
     } catch (err) {
       console.error(`[Keeper] Price fetch error:`, err);
     }

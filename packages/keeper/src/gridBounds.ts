@@ -7,7 +7,7 @@ import { priceToRowStart } from "./gridDeriver.js";
 export function calculateGridBounds(
   market: MarketConfig,
   currentPrice: number,
-  visibleRows: number = 10
+  visibleRows: number = 14
 ): GridBounds {
   if (!market.roundStartTime) {
     throw new Error("Round has not started");
@@ -16,8 +16,10 @@ export function calculateGridBounds(
   const centerRow = priceToRowStart(currentPrice, market.priceIncrement);
   const halfRows = Math.floor(visibleRows / 2);
 
-  const minPrice = centerRow - halfRows * market.priceIncrement;
-  const maxPrice = centerRow + halfRows * market.priceIncrement;
+  // Shift grid down by one increment so price range starts lower
+  // e.g., if centerRow is $63,400, show $63,300-$63,700 instead of $63,400-$63,800
+  const minPrice = centerRow - (halfRows + 1) * market.priceIncrement;
+  const maxPrice = centerRow + (halfRows - 1) * market.priceIncrement;
 
   const rows: number[] = [];
   for (let price = maxPrice; price >= minPrice; price -= market.priceIncrement) {

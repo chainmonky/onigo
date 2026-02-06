@@ -124,6 +124,7 @@
 
   body {
     min-height: 100vh;
+    font-family: var(--font-orbitron), var(--font-share-tech-mono), Orbitron, "Share Tech Mono", monospace;
   }
 
   h1,

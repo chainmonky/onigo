@@ -6,15 +6,18 @@ import type { MarketConfig } from "./types.js";
 const WS_PORT = 3001;
 
 // BTC/USDC Market Configuration
+// Smaller price increments = more rows = harder to win
+// Smaller time increments = more columns = spreads probability thinner
 const btcMarket: MarketConfig = {
   marketId: 1,
   marketName: "BTC/USDC",
   asset: "BTC",
-  priceIncrement: 200,
-  timeIncrement: 10,
+  priceIncrement: 100,   // $100 per row (was $200) - smaller ranges
+  timeIncrement: 5,      // 5 seconds per column (was 10) - more columns
 
-  roundDuration: 120,
-  bettingDuration: 60,
+  roundDuration: 120,    // 2 minutes total
+  bettingDuration: 60,   // 1 minute betting, 1 minute live
+  // Results in 12 columns (60s / 5s) instead of 6
 };
 
 // ETH/USDC Market Configuration (alternative)
@@ -22,8 +25,8 @@ const ethMarket: MarketConfig = {
   marketId: 2,
   marketName: "ETH/USDC",
   asset: "ETH",
-  priceIncrement: 20,
-  timeIncrement: 10,
+  priceIncrement: 10,    // $10 per row (was $20) - smaller ranges
+  timeIncrement: 5,      // 5 seconds per column (was 10) - more columns
   roundDuration: 120,
   bettingDuration: 60,
 };
