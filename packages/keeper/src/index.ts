@@ -1,59 +1,72 @@
 import { Keeper } from "./keeper.js";
 import { PriceFetcher } from "./priceFetcher.js";
 import { WebSocketServer } from "./wsServer.js";
+import { HttpServer } from "./httpServer.js"; 
 import type { MarketConfig } from "./types.js";
+import { calculateCurrentRound, fetchMarketsFromContract } from "./contractClient.js";
 
 const WS_PORT = 3001;
-
-// BTC/USDC Market Configuration
-// Smaller price increments = more rows = harder to win
-// Smaller time increments = more columns = spreads probability thinner
-const btcMarket: MarketConfig = {
-  marketId: 1,
-  marketName: "BTC/USDC",
-  asset: "BTC",
-  priceIncrement: 100,   // $100 per row (was $200) - smaller ranges
-  timeIncrement: 5,      // 5 seconds per column (was 10) - more columns
-
-  roundDuration: 120,    // 2 minutes total
-  bettingDuration: 60,   // 1 minute betting, 1 minute live
-  // Results in 12 columns (60s / 5s) instead of 6
-};
-
-// ETH/USDC Market Configuration (alternative)
-const ethMarket: MarketConfig = {
-  marketId: 2,
-  marketName: "ETH/USDC",
-  asset: "ETH",
-  priceIncrement: 10,    // $10 per row (was $20) - smaller ranges
-  timeIncrement: 5,      // 5 seconds per column (was 10) - more columns
-  roundDuration: 120,
-  bettingDuration: 60,
-};
+const HTTP_PORT = 3003; 
 
 async function main() {
   console.log("=".repeat(50));
   console.log("Onigo Keeper - No Signup Required!");
   console.log("=".repeat(50));
-  console.log("");
-  console.log("Price Sources:");
-  console.log("  1. Binance (primary) - No signup, 6000 req/min");
-  console.log("  2. Kraken (fallback) - No signup, 1 req/sec");
-  console.log("  3. CoinGecko (fallback) - No signup, 5-15 req/min");
-  console.log("");
+  
+  const CONTRACT_ADDRESS = process.env.ONIGO_CONTRACT_ADDRESS || "0x95240d08ee46850C404514654A451F2c8D6f8688"; 
+  const RPC_URL = process.env.RPC_URL || "https://base-sepolia-rpc.publicnode.com";
 
-  const wsServer = new WebSocketServer(WS_PORT);
+  console.log("\nFetching markets from contract...");
+  
+  let markets: MarketConfig[];
+  try {
+    markets = await fetchMarketsFromContract(CONTRACT_ADDRESS, RPC_URL);
+    console.log(`Found ${markets.length} markets on-chain`);
+    
+    for (const market of markets) {
+      console.log(`  - ${market.marketName} (ID: ${market.marketId})`);
+    }
+  } catch (err) {
+    console.error("Failed to fetch markets from contract:", err);
+    process.exit(1);
+  }
+
+  if (markets.length === 0) {
+    console.error("No markets found in contract");
+    process.exit(1);
+  }
+
   const priceFetcher = new PriceFetcher();
+  
   const marketArg = process.argv[2];
-  const market = marketArg === "eth" ? ethMarket : btcMarket;
+  let selectedMarket: MarketConfig;
+  
+  if (marketArg) {
+    const found = markets.find(m => m.asset.toLowerCase() === marketArg.toLowerCase());
+    if (!found) {
+      console.error(`Market ${marketArg} not found in contract`);
+      process.exit(1);
+    }
+    selectedMarket = found;
+  } else {
+    selectedMarket = markets[0];
+  }
 
-  console.log(`Selected market: ${market.marketName}`);
+  console.log(`\nSelected market: ${selectedMarket.marketName}`);
+  
+  const currentRound = calculateCurrentRound(
+    selectedMarket.marketStartTime!,
+    selectedMarket.roundLength!
+  );
+  
+  console.log(`Current round calculated: ${currentRound}`);
   console.log("");
+
   console.log("Testing price fetch...");
   try {
-    const testPrice = await priceFetcher.fetchPrice(market.asset);
+    const testPrice = await priceFetcher.fetchPrice(selectedMarket.asset);
     console.log(
-      `${market.asset} price: $${testPrice.price.toLocaleString()} from ${testPrice.source}`
+      `${selectedMarket.asset} price: $${testPrice.price.toLocaleString()} from ${testPrice.source}`
     );
   } catch (err) {
     console.error("Price fetch failed:", err);
@@ -61,20 +74,26 @@ async function main() {
   }
   console.log("");
 
-  const keeper = new Keeper(market, priceFetcher, wsServer);
+  // Create keeper first (needed by both servers)
+  const wsServer = new WebSocketServer(WS_PORT);
+  const keeper = new Keeper(selectedMarket, priceFetcher, wsServer);
+  
+  // ADD HTTP SERVER
+  const httpServer = new HttpServer(HTTP_PORT, keeper);
 
-  await keeper.startRound(1);
+  await keeper.startRound(currentRound);
 
   console.log(`WebSocket server running on ws://localhost:${WS_PORT}`);
+  console.log(`HTTP API server running on http://localhost:${HTTP_PORT}`);
   console.log("Connect your frontend to receive updates!");
 }
 
 main().catch(console.error);
 
-// Export for use as module
 export { Keeper } from "./keeper.js";
 export { PriceFetcher } from "./priceFetcher.js";
 export { WebSocketServer } from "./wsServer.js";
+export { HttpServer } from "./httpServer.js"; 
 export { deriveHitCells, priceToRowStart, timestampToColumnStart } from "./gridDeriver.js";
 export { calculateGridBounds } from "./gridBounds.js";
 export * from "./types.js";

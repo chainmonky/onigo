@@ -32,7 +32,8 @@ export class KeeperClient {
   private baseUrl: string;
 
   constructor(baseUrl?: string) {
-    this.baseUrl = baseUrl ?? config.KEEPER_URL;
+    // this.baseUrl = baseUrl ?? config.KEEPER_URL;
+    this.baseUrl = "http://localhost:3003";
     console.log(`[KeeperClient] Initialized with URL: ${this.baseUrl}`);
   }
 

@@ -29,7 +29,7 @@ export function calculateGridBounds(
   const liveDuration = market.roundDuration - market.bettingDuration;
   const numColumns = Math.ceil(liveDuration / market.timeIncrement);
 
-  const liveStartTime = market.roundStartTime + market.bettingDuration;
+ const liveStartTime = market.roundStartTime + market.bettingDuration;
   const columns: number[] = [];
   for (let i = 0; i < numColumns; i++) {
     columns.push(liveStartTime + i * market.timeIncrement);
