@@ -1,5 +1,6 @@
 "use client";
 
+import YellowDepositCard from "./YellowDeposit";
 import { motion } from "framer-motion";
 import { BalanceDisplay, BetAmountSelector, ChartWithGrid, CyberpunkNavbar, GameToasts } from "~~/components/game";
 import { useKeeperWebSocket } from "~~/hooks/useKeeperWebSocket";
@@ -60,6 +61,8 @@ export function PriceGridGame() {
             animate={{ opacity: 1, x: 0 }}
           >
             <BalanceDisplay />
+            <YellowDepositCard />
+
             <BetAmountSelector />
 
             {/* Market info card */}
