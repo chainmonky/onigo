@@ -50,7 +50,9 @@ const ethersWallet = new ethers.Wallet(config.BROKER_PRIVATE_KEY);
 const BROKER_ADDRESS = ethersWallet.address as `0x${string}`;
 
 // Viem wallet client for EIP-712 auth signing
-const viemAccount = privateKeyToAccount(config.BROKER_PRIVATE_KEY as `0x${string}`);
+const viemAccount = privateKeyToAccount(
+  config.BROKER_PRIVATE_KEY as `0x${string}`
+);
 const walletClient = createWalletClient({
   account: viemAccount,
   chain: baseSepolia,
@@ -213,7 +215,9 @@ async function handleCreateSession(
   const createSessionMsgJson = request.payload;
 
   console.log(`\n[CREATE SESSION] from ${playerAddress}`);
-  console.log(`   amount: ${amount}, marketId: ${marketId}, roundId: ${roundId}`);
+  console.log(
+    `   amount: ${amount}, marketId: ${marketId}, roundId: ${roundId}`
+  );
 
   try {
     // Broker co-signs the payload
@@ -253,13 +257,17 @@ async function handleCreateSession(
 
     console.log(`   App session created: ${appSessionId}`);
 
-    clientWs.send(JSON.stringify({
-      type: "session_created",
-      appSessionId,
-    }));
+    clientWs.send(
+      JSON.stringify({
+        type: "session_created",
+        appSessionId,
+      })
+    );
 
     // Auto-close session to transfer funds to broker (one session per bet)
-    console.log(`\n   [AUTO-CLOSE] Closing session to transfer funds to broker...`);
+    console.log(
+      `\n   [AUTO-CLOSE] Closing session to transfer funds to broker...`
+    );
     await handleCloseSession({
       type: "close_session",
       playerAddress: playerAddress,
@@ -277,13 +285,14 @@ async function handleCreateSession(
       bets,
     };
     betManager.addBet(betData);
-
   } catch (err) {
     console.error(`   Error creating session:`, err);
-    clientWs.send(JSON.stringify({
-      type: "session_error",
-      error: err instanceof Error ? err.message : String(err),
-    }));
+    clientWs.send(
+      JSON.stringify({
+        type: "session_error",
+        error: err instanceof Error ? err.message : String(err),
+      })
+    );
   }
 }
 
@@ -297,13 +306,23 @@ async function handleCloseSession(request: CloseSessionRequest): Promise<void> {
   }
 
   console.log(`\n[CLOSE SESSION] ${session.appSessionId}`);
-  console.log(`   Player payout: ${request.playerPayout}, Broker payout: ${request.brokerPayout}`);
+  console.log(
+    `   Player payout: ${request.playerPayout}, Broker payout: ${request.brokerPayout}`
+  );
 
   try {
     // Final allocations determine where funds go
     const finalAllocations = [
-      { participant: playerAddress, asset: "ytest.usd", amount: request.playerPayout },
-      { participant: BROKER_ADDRESS, asset: "ytest.usd", amount: request.brokerPayout },
+      {
+        participant: playerAddress,
+        asset: "ytest.usd",
+        amount: request.playerPayout,
+      },
+      {
+        participant: BROKER_ADDRESS,
+        asset: "ytest.usd",
+        amount: request.brokerPayout,
+      },
     ];
 
     const closeMsg = await createCloseAppSessionMessage(
@@ -324,57 +343,111 @@ async function handleCloseSession(request: CloseSessionRequest): Promise<void> {
   }
 }
 
-async function handleSettleRound(request: SettleRoundRequest, clientWs: WebSocket): Promise<void> {
+async function handleSettleRound(
+  request: SettleRoundRequest,
+  clientWs: WebSocket
+): Promise<void> {
   const { marketId, roundId } = request;
   console.log(`\n[SETTLE ROUND] market=${marketId} round=${roundId}`);
 
   try {
-    // Get all bets for this round
     const roundBets = betManager.getRoundBets(marketId, roundId);
     if (!roundBets || roundBets.bets.length === 0) {
-      clientWs.send(JSON.stringify({
-        type: "settle_error",
-        error: "No bets found for this round",
-      }));
+      console.log(`   No bets found - nothing to settle`);
+      clientWs.send(
+        JSON.stringify({
+          type: "round_settled",
+          marketId,
+          roundId,
+          txHash:
+            "0x0000000000000000000000000000000000000000000000000000000000000000",
+          winners: 0,
+          totalPayout: "0",
+        })
+      );
       return;
     }
 
-    console.log(`   Found ${roundBets.bets.length} players with total pool: ${roundBets.totalPool}`);
+    console.log(
+      `   Found ${roundBets.bets.length} players with total pool: ${roundBets.totalPool}`
+    );
 
     // Get hit cells from keeper
     const hitCells: GridCell[] = await keeperClient.getHitCells(marketId, roundId);
     console.log(`   Hit cells: ${hitCells.length}`);
 
-    // Get market config for commission
+    hitCells.forEach((cell, i) => {
+      console.log(
+        `     Hit ${i}: time=${cell.timeSlotStart}, price=${cell.dataRangeStart}`
+      );
+    });
+
     const market = await settler.getMarketConfig(marketId);
     console.log(`   Commission: ${market.commissionBps} bps`);
 
-    // Compute payouts
-    const payoutResult = computePayouts(roundBets.bets, hitCells, market.commissionBps);
+    const payoutResult = computePayouts(
+      roundBets.bets,
+      hitCells,
+      market.commissionBps
+    );
     console.log(`   Winners: ${payoutResult.players.length}`);
     console.log(`   Total payout: ${payoutResult.totalPayout}`);
 
+    // ✅ ADDED: Skip settlement if no winners
+    if (payoutResult.players.length === 0 || payoutResult.totalPayout === 0n) {
+      console.log(
+        `   No winners - everyone lost. Skipping on-chain settlement.`
+      );
+
+      betManager.clearRound(marketId, roundId);
+
+      clientWs.send(
+        JSON.stringify({
+          type: "round_settled",
+          marketId,
+          roundId,
+          txHash:
+            "0x0000000000000000000000000000000000000000000000000000000000000000",
+          winners: 0,
+          totalPayout: "0",
+        })
+      );
+      return;
+    }
+    payoutResult.players.forEach((player, i) => {
+      console.log(
+        `     Winner ${i}: ${player} gets ${payoutResult.payouts[i]}`
+      );
+    });
+
     // Settle on-chain
-    const txHash = await settler.settleRound(marketId, roundId, hitCells, payoutResult);
-
-    // Clear the round from memory
-    betManager.clearRound(marketId, roundId);
-
-    clientWs.send(JSON.stringify({
-      type: "round_settled",
+    const txHash = await settler.settleRound(
       marketId,
       roundId,
-      txHash,
-      winners: payoutResult.players.length,
-      totalPayout: payoutResult.totalPayout.toString(),
-    }));
+      hitCells,
+      payoutResult
+    );
 
+    betManager.clearRound(marketId, roundId);
+
+    clientWs.send(
+      JSON.stringify({
+        type: "round_settled",
+        marketId,
+        roundId,
+        txHash,
+        winners: payoutResult.players.length,
+        totalPayout: payoutResult.totalPayout.toString(),
+      })
+    );
   } catch (err) {
     console.error(`   Error settling round:`, err);
-    clientWs.send(JSON.stringify({
-      type: "settle_error",
-      error: err instanceof Error ? err.message : String(err),
-    }));
+    clientWs.send(
+      JSON.stringify({
+        type: "settle_error",
+        error: err instanceof Error ? err.message : String(err),
+      })
+    );
   }
 }
 
@@ -428,13 +501,15 @@ async function main() {
             break;
 
           case "get_sessions":
-            const sessions = Array.from(playerSessions.entries()).map(([addr, s]) => ({
-              playerAddress: addr,
-              appSessionId: s.appSessionId,
-              marketId: s.marketId,
-              roundId: s.roundId.toString(),
-              betsCount: s.bets.length,
-            }));
+            const sessions = Array.from(playerSessions.entries()).map(
+              ([addr, s]) => ({
+                playerAddress: addr,
+                appSessionId: s.appSessionId,
+                marketId: s.marketId,
+                roundId: s.roundId.toString(),
+                betsCount: s.bets.length,
+              })
+            );
             clientWs.send(JSON.stringify({ type: "sessions", sessions }));
             break;
 
@@ -444,7 +519,12 @@ async function main() {
             break;
 
           case "get_broker_address":
-            clientWs.send(JSON.stringify({ type: "broker_address", address: BROKER_ADDRESS }));
+            clientWs.send(
+              JSON.stringify({
+                type: "broker_address",
+                address: BROKER_ADDRESS,
+              })
+            );
             break;
 
           default:

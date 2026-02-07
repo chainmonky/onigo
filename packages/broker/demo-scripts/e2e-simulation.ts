@@ -58,7 +58,7 @@ const PLAYER_PRIVATE_KEY = process.env.PLAYER_PRIVATE_KEY ?? process.env.SENDER_
 const BROKER_PRIVATE_KEY = process.env.RECEIVER_PRIVATE_KEY; // For market creation (owner)
 const BROKER_URL = process.env.BROKER_URL ?? "ws://localhost:3002";
 const KEEPER_URL = process.env.KEEPER_URL ?? "ws://localhost:3001";
-const BET_AMOUNT = process.env.BET_AMOUNT ?? "10000"; // 0.01 USDC (6 decimals) - very small test amount
+const BET_AMOUNT = "5000000";
 const MARKET_ID = parseInt(process.env.MARKET_ID ?? "1");
 const RPC_URL = process.env.RPC_URL ?? "https://base-sepolia-rpc.publicnode.com";
 const CHAIN_ID = parseInt(process.env.CHAIN_ID ?? "84532");
@@ -790,6 +790,7 @@ async function handleRoundEnd(payload: KeeperRoundEndPayload): Promise<void> {
 
   // Print hit cells grid visualization
   printHitCellsVisualization(payload.hitCells, state.currentRound?.gridBounds);
+  
 
   // Convert keeper hit cells to broker format for settlement
   // Keeper uses: priceRangeStart, timeRangeStart
@@ -1005,7 +1006,7 @@ async function ensureMarketExists(): Promise<void> {
       functionName: "markets",
       args: [MARKET_ID],
     });
-    console.log(`  Market ${MARKET_ID} exists: ${market[7]}`);
+    console.log(`  Market ${MARKET_ID} exists: ${market[7]}    ${market}`);
     console.log(`    DataIncrement: ${market[3]}, TimeSlotWidth: ${market[4]}s, RoundLength: ${market[6]}s`);
     return;
   }
