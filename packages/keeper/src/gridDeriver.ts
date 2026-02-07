@@ -84,14 +84,17 @@ export function deriveHitCells(
       });
     }
   };
+ const livePhaseStart = market.roundStartTime + market.bettingDuration;
 
+  
   for (let i = 0; i < priceHistory.length; i++) {
     const current = priceHistory[i];
-    if (current.timestamp < market.roundStartTime) continue;
+    
+    if (current.timestamp < livePhaseStart) continue;
 
     const colStart = timestampToColumnStart(
       current.timestamp,
-      market.roundStartTime,
+      livePhaseStart,
       market.timeIncrement
     );
 
@@ -102,7 +105,7 @@ export function deriveHitCells(
       const prev = priceHistory[i - 1];
       const prevColStart = timestampToColumnStart(
         prev.timestamp,
-        market.roundStartTime,
+        livePhaseStart, 
         market.timeIncrement
       );
 
@@ -112,10 +115,10 @@ export function deriveHitCells(
         market.priceIncrement
       );
 
-      for (const rowStart of rowsTraversed) {
+   for (const rowStart of rowsTraversed) {
         if (
           colStart !== prevColStart &&
-          prev.timestamp >= market.roundStartTime
+          prev.timestamp >= livePhaseStart 
         ) {
           addCell(rowStart, prevColStart);
         }

@@ -18,6 +18,8 @@ export interface MarketConfig {
   bettingDuration: number; // Betting phase duration
   roundStartTime?: number;
   initialPrice?: number;
+  marketStartTime?: number; 
+  roundLength?: number;
 }
 
 export interface GridCell {

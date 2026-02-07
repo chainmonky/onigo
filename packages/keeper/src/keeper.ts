@@ -90,73 +90,80 @@ export class Keeper {
     );
   }
 
-  async startRound(roundId: number) {
-    const initial = await this.priceFetcher.fetchPrice(this.market.asset);
+async startRound(roundId: number) {
+  const initial = await this.priceFetcher.fetchPrice(this.market.asset);
 
-    const now = Math.floor(Date.now() / 1000);
-    const roundStartTime = now;
-    const bettingEndTime = now + this.market.bettingDuration;
-    const liveEndTime = now + this.market.roundDuration;
+  const roundStartTime = this.market.marketStartTime! + (roundId - 1) * this.market.roundLength!;
+  const now = Math.floor(Date.now() / 1000);
+  
+  const bettingEndTime = roundStartTime + this.market.bettingDuration;
+  const liveEndTime = roundStartTime + this.market.roundDuration;
 
-    this.market.roundStartTime = roundStartTime;
-    this.market.initialPrice = initial.price;
+  this.market.roundStartTime = roundStartTime;
+  this.market.initialPrice = initial.price;
 
-    const gridBounds = calculateGridBounds(this.market, initial.price);
+  const gridBounds = calculateGridBounds(this.market, initial.price);
 
-    this.currentRound = {
+  this.currentRound = {
+    marketId: this.market.marketId,
+    roundId,
+    phase: RoundPhase.BETTING,
+    roundStartTime,
+    bettingEndTime,
+    liveEndTime,
+    priceHistory: [],
+    currentPrice: initial.price,
+    initialPrice: initial.price,
+    gridBounds,
+  };
+
+  console.log(`\n${"=".repeat(50)}`);
+  console.log(`[Keeper] Round ${roundId} started`);
+  console.log(
+    `[Keeper] Initial price: $${initial.price.toLocaleString()} (${
+      initial.source
+    })`
+  );
+  console.log(
+    `[Keeper] Grid: ${gridBounds.rows.length} rows × ${gridBounds.columns.length} columns`
+  );
+  console.log(`[Keeper] Price increment: $${this.market.priceIncrement}`);
+  console.log(`[Keeper] Time increment: ${this.market.timeIncrement}s`);
+  console.log(`[Keeper] Betting phase: ${this.market.bettingDuration}s`);
+  console.log(
+    `[Keeper] Live phase: ${
+      this.market.roundDuration - this.market.bettingDuration
+    }s`
+  );
+  console.log(`[Keeper] Contract round start: ${roundStartTime}`);
+  console.log(`[Keeper] Current time: ${now}`);
+  console.log(`[Keeper] Time offset: ${now - roundStartTime}s`);
+  console.log(`${"=".repeat(50)}\n`);
+
+  const message: RoundStartMessage = {
+    type: "ROUND_START",
+    payload: {
       marketId: this.market.marketId,
       roundId,
       phase: RoundPhase.BETTING,
-      roundStartTime,
-      bettingEndTime,
-      liveEndTime,
-      priceHistory: [],
-      currentPrice: initial.price,
       initialPrice: initial.price,
       gridBounds,
-    };
-
-    console.log(`\n${"=".repeat(50)}`);
-    console.log(`[Keeper] Round ${roundId} started`);
-    console.log(
-      `[Keeper] Initial price: $${initial.price.toLocaleString()} (${
-        initial.source
-      })`
-    );
-    console.log(
-      `[Keeper] Grid: ${gridBounds.rows.length} rows × ${gridBounds.columns.length} columns`
-    );
-    console.log(`[Keeper] Price increment: $${this.market.priceIncrement}`);
-    console.log(`[Keeper] Time increment: ${this.market.timeIncrement}s`);
-    console.log(`[Keeper] Betting phase: ${this.market.bettingDuration}s`);
-    console.log(
-      `[Keeper] Live phase: ${
-        this.market.roundDuration - this.market.bettingDuration
-      }s`
-    );
-    console.log(`${"=".repeat(50)}\n`);
-
-    const message: RoundStartMessage = {
-      type: "ROUND_START",
-      payload: {
-        marketId: this.market.marketId,
-        roundId,
-        phase: RoundPhase.BETTING,
-        initialPrice: initial.price,
-        gridBounds,
-        timing: { roundStartTime, bettingEndTime, liveEndTime },
-        config: {
-          priceIncrement: this.market.priceIncrement,
-          timeIncrement: this.market.timeIncrement,
-        },
+      timing: { roundStartTime, bettingEndTime, liveEndTime },
+      config: {
+        priceIncrement: this.market.priceIncrement,
+        timeIncrement: this.market.timeIncrement,
       },
-    };
-    this.broadcast(message);
-    setTimeout(
-      () => this.transitionToLive(),
-      this.market.bettingDuration * 1000
-    );
-  }
+    },
+  };
+  this.broadcast(message);
+  
+
+  const timeUntilBettingEnds = Math.max(0, (bettingEndTime - now) * 1000);
+  setTimeout(
+    () => this.transitionToLive(),
+    timeUntilBettingEnds
+  );
+}
 
   private transitionToLive() {
     if (!this.currentRound) return;
