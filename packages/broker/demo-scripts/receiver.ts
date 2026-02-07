@@ -17,19 +17,8 @@ import {
   createAuthVerifyMessage,
   createEIP712AuthMessageSigner,
   createGetLedgerBalancesMessage,
-  createCreateChannelMessage,
-  createResizeChannelMessage,
-  createCloseChannelMessage,
-  createAppSessionMessage,
   createCloseAppSessionMessage,
-  createApplicationMessage,
-  parseAuthChallengeResponse,
-  parseAnyRPCResponse,
-  parseCreateChannelResponse,
-  parseResizeChannelResponse,
-  parseCloseChannelResponse,
   RPCMethod,
-  RPCProtocolVersion,
   NitroliteClient,
   WalletStateSigner,
   createECDSAMessageSigner,
@@ -435,11 +424,15 @@ async function main() {
   
   console.log("   Authenticated.\n");
 
+  console.log("3. Querying ledger balance...");
+  const balMsg = await createGetLedgerBalancesMessage(messageSigner, ADDRESS, Date.now());
+  const balanceResponse = await yellow.sendMessage(JSON.parse(balMsg));
+
   // Store reference for broker API handlers
 
   // 3. Start broker API server
   const wss = new WebSocketServer({ port: BROKER_API_PORT });
-  console.log(`3. Broker API listening on port ${BROKER_API_PORT}\n`);
+  console.log(`4. Broker API listening on port ${BROKER_API_PORT}\n`);
 
   wss.on("connection", (clientWs) => {
     console.log("[API] Client connected");

@@ -1114,6 +1114,10 @@ async function main(): Promise<void> {
     console.log("  4. Trigger settlement via Broker");
     console.log("\nPress Ctrl+C to exit at any time.\n");
 
+    yellow.listen(async (message: RPCResponse) => {
+      console.log('📨 Received message:', message);
+    });
+
     // Keep the process running
     await new Promise((resolve) => {
       process.on("SIGINT", () => {

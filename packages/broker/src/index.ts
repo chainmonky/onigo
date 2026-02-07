@@ -11,7 +11,7 @@
 import { WebSocketServer } from "ws";
 import type WebSocket from "ws";
 import { ethers } from "ethers";
-import { createWalletClient, http, decodeAbiParameters, encodeAbiParameters, type Hex, type WalletClient } from "viem";
+import { createPublicClient, createWalletClient, http, decodeAbiParameters, encodeAbiParameters, type Hex, type WalletClient } from "viem";
 import { generatePrivateKey, privateKeyToAccount, type Address } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 import { Client } from "yellow-ts";
@@ -20,7 +20,12 @@ import {
   createAuthVerifyMessage,
   createEIP712AuthMessageSigner,
   createCloseAppSessionMessage,
+  createCreateChannelMessage,
+  createResizeChannelMessage,
+  createCloseChannelMessage,
   createECDSAMessageSigner,
+  NitroliteClient,
+  WalletStateSigner,
   RPCMethod,
   type RPCResponse,
   type AuthChallengeResponse,
@@ -57,6 +62,23 @@ const walletClient = createWalletClient({
   account: viemAccount,
   chain: baseSepolia,
   transport: http(),
+});
+
+// Viem public client for on-chain reads
+const publicClient = createPublicClient({
+  chain: baseSepolia,
+  transport: http(),
+});
+
+// NitroliteClient for on-chain channel operations (withdraw from Yellow)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const nitroliteClient = new NitroliteClient({
+  publicClient: publicClient as any,
+  walletClient: walletClient as any,
+  stateSigner: new WalletStateSigner(walletClient as any),
+  addresses: { custody: config.CUSTODY_ADDRESS, adjudicator: config.ADJUDICATOR_ADDRESS },
+  chainId: baseSepolia.id,
+  challengeDuration: 3600n,
 });
 
 // Random session key (ephemeral)
@@ -193,6 +215,209 @@ async function authenticateWallet(client: Client, walletAccount: WalletClient): 
   };
 
   return sessionKey;
+}
+
+// --- Helpers ---
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// --- Withdraw from Yellow Network ---
+
+async function closeExistingChannel(channelId: `0x${string}`): Promise<void> {
+  console.log(`   Closing existing channel ${channelId}...`);
+
+  // Request close from ClearNode
+  const closeMsg = await createCloseChannelMessage(
+    messageSigner,
+    channelId,
+    BROKER_ADDRESS // funds_destination
+  );
+  const closeResponse = await yellow.sendMessage(JSON.parse(closeMsg));
+  console.log("   Close channel response received from ClearNode");
+
+  const { state, serverSignature } = closeResponse.params;
+
+  const finalState = {
+    channelId,
+    serverSignature: serverSignature as `0x${string}`,
+    intent: state.intent,
+    version: BigInt(state.version),
+    data: state.stateData,
+    allocations: state.allocations.map((a: any) => ({
+      destination: a.destination,
+      token: a.token,
+      amount: BigInt(a.amount),
+    })),
+  };
+
+  // Submit close on-chain
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const closeTxHash = await nitroliteClient.closeChannel({
+    finalState: finalState as any,
+    stateData: state.stateData,
+  });
+  console.log(`   Close channel tx: ${closeTxHash}`);
+  await delay(5000);
+}
+
+/**
+ * Withdraw funds from Yellow Network to Base Sepolia.
+ * This moves funds from the broker's Yellow ledger balance to the on-chain custody contract,
+ * then withdraws from custody to the broker's wallet.
+ */
+async function withdrawFromYellow(amount: bigint): Promise<void> {
+  console.log(`\n[WITHDRAW] Withdrawing ${amount} from Yellow to Base Sepolia...`);
+
+  // Step 0: Check custody balance - if funds already there, skip channel operations
+  console.log("   Checking custody balance...");
+  const custodyBalance = await nitroliteClient.getAccountBalance(config.TOKEN_ADDRESS);
+  console.log(`   Custody balance: ${custodyBalance}`);
+
+  if (custodyBalance >= amount) {
+    console.log(`   Sufficient funds in custody. Skipping channel operations.`);
+    console.log("   Withdrawing from Custody contract...");
+    const withdrawTxHash = await nitroliteClient.withdrawal(config.TOKEN_ADDRESS, amount);
+    console.log(`   Withdraw tx: ${withdrawTxHash}`);
+    console.log(`   ✅ Withdrawal complete.`);
+    return;
+  }
+
+  // Step 1: Close any existing open channels first
+  console.log("   Checking for open channels on-chain...");
+  const openChannels = await nitroliteClient.getOpenChannels();
+
+  if (openChannels.length > 0) {
+    console.log(`   Found ${openChannels.length} open channel(s). Closing them first...`);
+    for (const existingChannelId of openChannels) {
+      await closeExistingChannel(existingChannelId as `0x${string}`);
+    }
+    console.log("   All existing channels closed.");
+  } else {
+    console.log("   No open channels found.");
+  }
+
+  // Step 2: Create a fresh channel
+  console.log("   Creating new channel...");
+
+  const createChMsg = await createCreateChannelMessage(messageSigner, {
+    chain_id: baseSepolia.id,
+    token: config.TOKEN_ADDRESS,
+  });
+
+  const createChResponse = await yellow.sendMessage(JSON.parse(createChMsg));
+  console.log("   Channel creation response received");
+
+  const { channel, state: rpcInitialState, serverSignature } = createChResponse.params;
+  const channelId = createChResponse.params.channelId as `0x${string}`;
+  console.log(`   Channel created: ${channelId}`);
+
+  // Map RPC response to SDK's UnsignedState
+  const unsignedInitialState = {
+    intent: rpcInitialState.intent,
+    version: BigInt(rpcInitialState.version),
+    data: rpcInitialState.stateData,
+    allocations: rpcInitialState.allocations.map((a: any) => ({
+      destination: a.destination,
+      token: a.token,
+      amount: BigInt(a.amount),
+    })),
+  };
+
+  // Submit channel creation on-chain
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const createResult = await nitroliteClient.createChannel({
+    channel: channel as any,
+    unsignedInitialState: unsignedInitialState as any,
+    serverSignature: serverSignature as `0x${string}`,
+  });
+  console.log(`   On-chain create tx: ${createResult.txHash}`);
+  await delay(5000);
+
+  // Step 3: Resize channel with positive amount to move funds FROM unified balance TO custody
+  console.log(`   Resizing channel (allocate_amount: ${amount})...`);
+
+  const resizeMsg = await createResizeChannelMessage(messageSigner, {
+    channel_id: channelId,
+    allocate_amount: amount,
+    funds_destination: BROKER_ADDRESS,
+  });
+
+  const resizeResponse = await yellow.sendMessage(JSON.parse(resizeMsg));
+  console.log("   Resize response received");
+
+  const { state, serverSignature: resizeServerSig } = resizeResponse.params;
+
+  const resizeState = {
+    channelId: resizeResponse.params.channelId as `0x${string}`,
+    serverSignature: resizeServerSig,
+    intent: state.intent,
+    version: BigInt(state.version),
+    data: state.stateData,
+    allocations: state.allocations.map((a: any) => ({
+      destination: a.destination,
+      token: a.token,
+      amount: BigInt(a.amount),
+    })),
+  };
+
+  // Fetch proof states from on-chain channel data
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let proofStates: any[] = [];
+  try {
+    const onChainData = await nitroliteClient.getChannelData(channelId);
+    console.log("   On-chain channel data fetched");
+    if (onChainData.lastValidState) {
+      proofStates = [onChainData.lastValidState];
+    }
+  } catch (e) {
+    console.log(`   Failed to fetch on-chain data: ${e}`);
+  }
+
+  // Submit resize on-chain
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const resizeResult = await nitroliteClient.resizeChannel({
+    resizeState: resizeState as any,
+    proofStates,
+  });
+  console.log(`   Resize tx: ${resizeResult.txHash}`);
+  await delay(5000);
+
+  // Step 4: Close the channel to finalize
+  const closeMsg = await createCloseChannelMessage(messageSigner, channelId, BROKER_ADDRESS);
+  const closeResponse = await yellow.sendMessage(JSON.parse(closeMsg));
+  console.log("   Close channel response received from ClearNode");
+
+  const { state: closeState, serverSignature: closeServerSignature } = closeResponse.params;
+
+  const finalState = {
+    channelId,
+    serverSignature: closeServerSignature as `0x${string}`,
+    intent: closeState.intent,
+    version: BigInt(closeState.version),
+    data: closeState.stateData,
+    allocations: closeState.allocations.map((a: any) => ({
+      destination: a.destination,
+      token: a.token,
+      amount: BigInt(a.amount),
+    })),
+  };
+
+  // Submit close on-chain
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const closeTxHash = await nitroliteClient.closeChannel({
+    finalState: finalState as any,
+    stateData: closeState.stateData,
+  });
+  console.log(`   Close tx: ${closeTxHash}`);
+  await delay(5000);
+
+  // Step 5: Withdraw from Custody contract on-chain
+  console.log("   Withdrawing from Custody contract...");
+
+  const withdrawTxHash = await nitroliteClient.withdrawal(config.TOKEN_ADDRESS, amount);
+  console.log(`   Withdraw tx: ${withdrawTxHash}`);
+
+  console.log(`   ✅ Successfully withdrew ${amount} from Yellow to Base Sepolia`);
 }
 
 // --- Session Handlers ---
@@ -419,6 +644,10 @@ async function handleSettleRound(
         `     Winner ${i}: ${player} gets ${payoutResult.payouts[i]}`
       );
     });
+
+    // Withdraw funds from Yellow Network to Base Sepolia before settling
+    console.log(`   Withdrawing ${payoutResult.totalPayout} from Yellow to Base Sepolia...`);
+    await withdrawFromYellow(payoutResult.totalPayout);
 
     // Settle on-chain
     const txHash = await settler.settleRound(

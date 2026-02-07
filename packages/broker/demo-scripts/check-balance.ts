@@ -3,41 +3,72 @@
  *
  * Usage:
  *   PRIVATE_KEY=0x... yarn check-balance
+ *   PRIVATE_KEY=0x... yarn check-balance --withdraw  # Withdraw 10 units
  */
 
 import "dotenv/config";
-import WebSocket from "ws";
 import { ethers } from "ethers";
-import { createWalletClient, http } from "viem";
-import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { sepolia } from "viem/chains";
+import { createPublicClient, createWalletClient, http, formatUnits, type WalletClient } from "viem";
+import { generatePrivateKey, privateKeyToAccount, type Address } from "viem/accounts";
+import { baseSepolia } from "viem/chains";
+import { Client } from "yellow-ts";
 import {
   createAuthRequestMessage,
   createAuthVerifyMessage,
   createEIP712AuthMessageSigner,
   createGetLedgerBalancesMessage,
-  parseAuthChallengeResponse,
-  parseAnyRPCResponse,
+  createCreateChannelMessage,
+  createResizeChannelMessage,
+  createCloseChannelMessage,
+  createECDSAMessageSigner,
+  parseCloseChannelResponse,
+  NitroliteClient,
+  WalletStateSigner,
   RPCMethod,
+  type RPCResponse,
+  type AuthChallengeResponse,
 } from "@erc7824/nitrolite";
+
+// --- Config ---
 
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const CLEARNODE_URL =
   process.env.CLEARNODE_URL ?? "wss://clearnet-sandbox.yellow.com/ws";
+const WITHDRAW_FLAG = process.argv.includes("--withdraw");
+const WITHDRAW_AMOUNT = 10n; // Withdraw 10 units (in token's smallest unit)
+
+// Contract addresses (Base Sepolia)
+const CUSTODY_ADDRESS = "0x019B65A265EB3363822f2752141b3dF16131b262" as const;
+const ADJUDICATOR_ADDRESS = "0x7c7ccbc98469190849BCC6c926307794fDfB11F2" as const;
+const TOKEN_ADDRESS = "0xDB9F293e3898c9E5536A3be1b0C56c89d2b32DEb" as const; // yUSD
+const TOKEN_DECIMALS = 6;
 
 if (!PRIVATE_KEY) {
   console.error("Required: PRIVATE_KEY");
   process.exit(1);
 }
 
+// --- Yellow Network Client ---
+
+const yellow = new Client({
+  url: CLEARNODE_URL,
+});
+
+// --- Wallet Setup ---
+
 const ethersWallet = new ethers.Wallet(PRIVATE_KEY);
 const ADDRESS = ethersWallet.address as `0x${string}`;
 
-// Viem wallet client for EIP-712 auth signing (wallet owner signs to authorize session key)
+// Viem wallet client for EIP-712 auth signing
 const viemAccount = privateKeyToAccount(PRIVATE_KEY as `0x${string}`);
 const walletClient = createWalletClient({
   account: viemAccount,
-  chain: sepolia,
+  chain: baseSepolia,
+  transport: http(),
+});
+
+const publicClient = createPublicClient({
+  chain: baseSepolia,
   transport: http(),
 });
 
@@ -46,138 +77,317 @@ const sessionKeyPrivate = generatePrivateKey();
 const sessionKeyAccount = privateKeyToAccount(sessionKeyPrivate);
 const SESSION_KEY_ADDRESS = sessionKeyAccount.address;
 
-const messageSigner = async (payload: unknown): Promise<`0x${string}`> => {
-  const message = JSON.stringify(payload);
-  const digestHex = ethers.id(message);
-  const messageBytes = ethers.getBytes(digestHex);
-  const { serialized: signature } = ethersWallet.signingKey.sign(messageBytes);
-  return signature as `0x${string}`;
-};
+// Session key message signer
+let messageSigner = createECDSAMessageSigner(sessionKeyPrivate);
 
-function waitForMessage(
-  ws: WebSocket,
-  predicate: (msg: Record<string, unknown>) => boolean,
-  timeoutMs = 15000
-): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      ws.removeListener("message", handler);
-      reject(new Error("Timed out waiting for message"));
-    }, timeoutMs);
+// NitroliteClient for on-chain channel operations
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const nitroliteClient = new NitroliteClient({
+  publicClient: publicClient as any,
+  walletClient: walletClient as any,
+  stateSigner: new WalletStateSigner(walletClient as any),
+  addresses: { custody: CUSTODY_ADDRESS, adjudicator: ADJUDICATOR_ADDRESS },
+  chainId: baseSepolia.id,
+  challengeDuration: 3600n,
+});
 
-    function handler(data: WebSocket.Data) {
-      const raw = typeof data === "string" ? data : data.toString();
-      try {
-        const msg = JSON.parse(raw);
-        const res = msg.res as unknown[];
-        if (res?.[1] === "error") {
-          clearTimeout(timeout);
-          ws.removeListener("message", handler);
-          reject(
-            new Error(
-              `ClearNode error: ${JSON.stringify((res[2] as Record<string, unknown>)?.error)}`
-            )
-          );
-          return;
-        }
-        if (predicate(msg)) {
-          clearTimeout(timeout);
-          ws.removeListener("message", handler);
-          resolve(msg);
-        }
-      } catch {
-        // ignore
-      }
-    }
+// --- Types ---
 
-    ws.on("message", handler);
-  });
+interface SessionKey {
+  privateKey: `0x${string}`;
+  address: Address;
 }
+
+// --- Helpers ---
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// --- Authentication ---
+
+async function authenticateWallet(client: Client, walletAccount: WalletClient): Promise<SessionKey> {
+  console.log(`Wallet address: ${walletAccount.account?.address}`);
+
+  const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 60000000);
+
+  const customWalletClient = createWalletClient({
+    account: walletAccount.account,
+    chain: baseSepolia,
+    transport: http(),
+  });
+
+  const allowances = [
+    { asset: "ytest.usd", amount: "1000000000" },
+  ];
+
+  // Create authentication message with session configuration
+  const authMessage = await createAuthRequestMessage({
+    address: ADDRESS,
+    session_key: SESSION_KEY_ADDRESS,
+    application: "onigo",
+    expires_at: expiresAt,
+    scope: "console",
+    allowances,
+  });
+
+  async function handleAuthChallenge(message: AuthChallengeResponse) {
+    const authParams = {
+      address: ADDRESS,
+      session_key: SESSION_KEY_ADDRESS,
+      application: "onigo",
+      expires_at: expiresAt,
+      scope: "console",
+      allowances,
+    };
+
+    const eip712Signer = createEIP712AuthMessageSigner(customWalletClient, authParams, { name: "onigo" });
+
+    const authVerifyMessage = await createAuthVerifyMessage(eip712Signer, message);
+
+    await client.sendMessage(authVerifyMessage);
+  }
+
+  client.listen(async (message: RPCResponse) => {
+    if (message.method === RPCMethod.AuthChallenge) {
+      await handleAuthChallenge(message as AuthChallengeResponse);
+    }
+  });
+
+  await client.sendMessage(authMessage);
+
+  const sessionKey: SessionKey = {
+    privateKey: sessionKeyPrivate,
+    address: SESSION_KEY_ADDRESS,
+  };
+
+  return sessionKey;
+}
+
+// --- Withdraw ---
+
+async function closeExistingChannel(channelId: `0x${string}`): Promise<void> {
+  console.log(`   Closing existing channel ${channelId}...`);
+
+  // Request close from ClearNode
+  const closeMsg = await createCloseChannelMessage(
+    messageSigner,
+    channelId,
+    ADDRESS // funds_destination
+  );
+  const closeResponse = await yellow.sendMessage(JSON.parse(closeMsg));
+  console.log("   Close channel response received from ClearNode");
+
+  const { state, serverSignature } = closeResponse.params;
+
+  const finalState = {
+    channelId,
+    serverSignature: serverSignature as `0x${string}`,
+    intent: state.intent,
+    version: BigInt(state.version),
+    data: state.stateData,
+    allocations: state.allocations.map((a: any) => ({
+      destination: a.destination,
+      token: a.token,
+      amount: BigInt(a.amount),
+    })),
+  };
+
+  // Submit close on-chain
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const closeTxHash = await nitroliteClient.closeChannel({
+    finalState: finalState as any, stateData: state.stateData
+  });
+  console.log(`   Close channel tx: ${closeTxHash}`);
+  await delay(5000);
+}
+
+async function withdrawFunds(amount: bigint): Promise<void> {
+  console.log(`\n4. Withdrawing ${amount} units...`);
+
+  // Step 0: Check custody balance - if funds already there, skip to withdrawal
+  console.log("   Checking custody balance...");
+  const custodyBalance = await nitroliteClient.getAccountBalance(TOKEN_ADDRESS);
+  console.log(`   Custody balance: ${custodyBalance}`);
+
+  // Step 1: Close any existing open channels first
+  console.log("   Checking for open channels on-chain...");
+  const openChannels = await nitroliteClient.getOpenChannels();
+
+  if (openChannels.length > 0) {
+    console.log(`   Found ${openChannels.length} open channel(s). Closing them first...`);
+    for (const existingChannelId of openChannels) {
+      await closeExistingChannel(existingChannelId as `0x${string}`);
+    }
+    console.log("   All existing channels closed.");
+  } else {
+    console.log("   No open channels found.");
+  }
+
+  // Step 2: Create a fresh channel
+  console.log("   Creating new channel...");
+
+  const createChMsg = await createCreateChannelMessage(messageSigner, {
+    chain_id: baseSepolia.id,
+    token: TOKEN_ADDRESS,
+  });
+
+  const createChResponse = await yellow.sendMessage(JSON.parse(createChMsg));
+  console.log("   Channel creation response received");
+
+  const { channel, state: rpcInitialState, serverSignature } = createChResponse.params;
+  const channelId = createChResponse.params.channelId as `0x${string}`;
+  console.log(`   Channel created: ${channelId}`);
+
+  // Map RPC response to SDK's UnsignedState
+  const unsignedInitialState = {
+    intent: rpcInitialState.intent,
+    version: BigInt(rpcInitialState.version),
+    data: rpcInitialState.stateData,
+    allocations: rpcInitialState.allocations.map((a: any) => ({
+      destination: a.destination,
+      token: a.token,
+      amount: BigInt(a.amount),
+    })),
+  };
+
+  // Submit channel creation on-chain
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const createResult = await nitroliteClient.createChannel({
+    channel: channel as any,
+    unsignedInitialState: unsignedInitialState as any,
+    serverSignature: serverSignature as `0x${string}`,
+  });
+  console.log(`   On-chain create tx: ${createResult.txHash}`);
+  await delay(5000);
+
+  // Step 3: Resize channel with NEGATIVE amount to move funds FROM unified balance TO custody
+  console.log(`   Resizing channel (allocate_amount: -${amount})...`);
+
+  const resizeMsg = await createResizeChannelMessage(messageSigner, {
+    channel_id: channelId,
+    allocate_amount: amount,
+    funds_destination: ADDRESS,
+  });
+
+  const resizeResponse = await yellow.sendMessage(JSON.parse(resizeMsg));
+  console.log("   Resize response received");
+  console.log(resizeResponse);
+
+  const { state, serverSignature: resizeServerSig } = resizeResponse.params;
+
+  const resizeState = {
+    channelId: resizeResponse.params.channelId as `0x${string}`,
+    serverSignature: resizeServerSig,
+    intent: state.intent,
+    version: BigInt(state.version),
+    data: state.stateData,
+    allocations: state.allocations.map((a: any) => ({
+      destination: a.destination,
+      token: a.token,
+      amount: BigInt(a.amount),
+    })),
+  };
+
+  // Fetch proof states from on-chain channel data
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let proofStates: any[] = [];
+  try {
+    const onChainData = await nitroliteClient.getChannelData(channelId);
+    console.log("   On-chain channel data fetched");
+    if (onChainData.lastValidState) {
+      proofStates = [onChainData.lastValidState];
+    }
+  } catch (e) {
+    console.log(`   Failed to fetch on-chain data: ${e}`);
+  }
+
+  // Submit resize on-chain
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const resizeResult = await nitroliteClient.resizeChannel({
+    resizeState: resizeState as any,
+    proofStates,
+  });
+  console.log(`   Resize tx: ${resizeResult.txHash}`);
+  await delay(5000);
+
+  const closeMsg = await createCloseChannelMessage(messageSigner, channelId, ADDRESS);
+  const closeResponse = await yellow.sendMessage(JSON.parse(closeMsg));
+  console.log("   Close channel response received from ClearNode");
+  console.log(closeResponse);
+  const { state: closeState, serverSignature: closeServerSignature } = closeResponse.params;
+
+  const finalState = {
+    channelId,
+    serverSignature: closeServerSignature as `0x${string}`,
+    intent: closeState.intent,
+    version: BigInt(closeState.version),
+    data: closeState.stateData,
+    allocations: closeState.allocations.map((a: any) => ({
+      destination: a.destination,
+      token: a.token,
+      amount: BigInt(a.amount),
+    })),
+  };
+
+  // Submit close on-chain
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const closeTxHash = await nitroliteClient.closeChannel({
+    finalState: finalState as any, stateData: closeState.stateData
+  });
+  console.log(`       Close tx: ${closeTxHash}`);
+
+  // Step 4: Withdraw from Custody contract on-chain
+  console.log("   Withdrawing from Custody contract...");
+
+  const withdrawTxHash = await nitroliteClient.withdrawal(TOKEN_ADDRESS, amount);
+  console.log(`   Withdraw tx: ${withdrawTxHash}`);
+
+  console.log(`\n✅ Successfully withdrew ${formatUnits(amount, TOKEN_DECIMALS)} yUSD`);
+}
+
+// --- Main ---
 
 async function main() {
   console.log(`Address:   ${ADDRESS}`);
-  console.log(`ClearNode: ${CLEARNODE_URL}\n`);
+  console.log(`Session Key: ${SESSION_KEY_ADDRESS}`);
+  console.log(`ClearNode: ${CLEARNODE_URL}`);
+  console.log(`Withdraw:  ${WITHDRAW_FLAG ? `Yes (${WITHDRAW_AMOUNT} units)` : "No"}\n`);
 
-  const ws = new WebSocket(CLEARNODE_URL);
-  await new Promise<void>((resolve, reject) => {
-    ws.onopen = () => resolve();
-    ws.onerror = (err) => reject(err);
-  });
+  // 1. Connect to ClearNode
+  console.log("1. Connecting to ClearNode...");
+  await yellow.connect();
+  console.log("   Connected.\n");
 
-  // Auth
-  const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 3600);
+  // 2. Authenticate
+  console.log("2. Authenticating...");
+  const sessionKey = await authenticateWallet(yellow, walletClient as WalletClient);
+  messageSigner = createECDSAMessageSigner(sessionKey.privateKey);
+  console.log("   Authenticated.\n");
 
-  const authRequestMsg = await createAuthRequestMessage({
-    address: ADDRESS,
-    session_key: SESSION_KEY_ADDRESS,
-    application: "onigo-demo",
-    expires_at: expiresAt,
-    scope: "console",
-    allowances: [],
-  });
+  // 3. Query balance
+  console.log("3. Querying ledger balance...");
+  const balMsg = await createGetLedgerBalancesMessage(messageSigner, ADDRESS, Date.now());
+  const balanceResponse = await yellow.sendMessage(JSON.parse(balMsg));
 
-  const challengePromise = waitForMessage(ws, (msg) => {
-    const parsed = parseAnyRPCResponse(JSON.stringify(msg));
-    return parsed.method === RPCMethod.AuthChallenge;
-  });
+  console.log("   Balance response:", JSON.stringify(balanceResponse, null, 2));
 
-  ws.send(authRequestMsg);
-  const challengeMsg = await challengePromise;
-
-  const eip712Signer = createEIP712AuthMessageSigner(
-    walletClient,
-    {
-      scope: "console",
-      session_key: SESSION_KEY_ADDRESS,
-      expires_at: expiresAt,
-      allowances: [],
-    },
-    { name: "onigo-demo" }
-  );
-
-  const authVerifyMsg = await createAuthVerifyMessage(
-    eip712Signer,
-    parseAuthChallengeResponse(JSON.stringify(challengeMsg))
-  );
-
-  const authResultPromise = waitForMessage(ws, (msg) => {
-    const parsed = parseAnyRPCResponse(JSON.stringify(msg));
-    return parsed.method === RPCMethod.AuthVerify;
-  });
-
-  ws.send(authVerifyMsg);
-  const authResult = await authResultPromise;
-  const authParsed = parseAnyRPCResponse(JSON.stringify(authResult));
-
-  if (!(authParsed.params as Record<string, unknown>)?.success) {
-    throw new Error("Authentication failed");
-  }
-  console.log("Authenticated.\n");
-
-  // Query balance
-  const balMsg = await createGetLedgerBalancesMessage(messageSigner);
-  const balPromise = waitForMessage(ws, (msg) => {
-    const res = msg.res as unknown[];
-    return res?.[1] === "get_ledger_balances";
-  });
-
-  ws.send(balMsg);
-  const balResp = await balPromise;
-  const balData = (balResp.res as unknown[])[2] as Record<string, unknown>;
-  const balances = (balData?.ledger_balances ?? balData?.balances) as
-    | Record<string, unknown>[]
-    | undefined;
+  // Extract balances from response (can be ledgerBalances or balances)
+  const params = balanceResponse.params as Record<string, unknown> | undefined;
+  const balances = (params?.ledgerBalances ?? params?.balances) as Record<string, unknown>[] | undefined;
 
   if (!balances || balances.length === 0) {
-    console.log("No balances found.");
+    console.log("\nNo balances found.");
   } else {
-    console.log("Balances:");
+    console.log("\nBalances:");
     for (const b of balances) {
       console.log(`  ${b.asset}: ${b.amount}`);
     }
   }
 
-  ws.close();
+  // 4. Withdraw if flag is set
+  if (WITHDRAW_FLAG) {
+    await withdrawFunds(WITHDRAW_AMOUNT);
+  }
+
   process.exit(0);
 }
 
