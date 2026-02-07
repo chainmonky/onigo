@@ -8,30 +8,30 @@
 import "dotenv/config";
 import WebSocket, { WebSocketServer } from "ws";
 import { ethers } from "ethers";
-import { createPublicClient, createWalletClient, http } from "viem";
-import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { createPublicClient, createWalletClient, http, WalletClient } from "viem";
+import { Address, generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
+import { Client } from "yellow-ts";
 import {
   createAuthRequestMessage,
   createAuthVerifyMessage,
   createEIP712AuthMessageSigner,
   createGetLedgerBalancesMessage,
-  createCreateChannelMessage,
-  createResizeChannelMessage,
-  createCloseChannelMessage,
   createCloseAppSessionMessage,
-  createApplicationMessage,
-  parseAuthChallengeResponse,
-  parseAnyRPCResponse,
-  parseCreateChannelResponse,
-  parseResizeChannelResponse,
-  parseCloseChannelResponse,
   RPCMethod,
   NitroliteClient,
   WalletStateSigner,
+  createECDSAMessageSigner,
+  RPCData,
+  AuthChallengeResponse,
+  RPCResponse,
+  
 } from "@erc7824/nitrolite";
 import { decodeAbiParameters, encodeAbiParameters, type Hex } from "viem";
-import { RPCProtocolVersion } from "@erc7824/nitrolite";
+
+const yellow = new Client({
+        url: 'wss://clearnet-sandbox.yellow.com/ws',
+    });
 
 // --- BetData ABI decoding ---
 
@@ -59,24 +59,6 @@ const BET_DATA_ABI = [
   },
 ] as const;
 
-function decodeBetData(hex: Hex) {
-  const [result] = decodeAbiParameters(BET_DATA_ABI, hex);
-  return result;
-}
-
-function formatBetData(decoded: ReturnType<typeof decodeBetData>) {
-  return {
-    roundId: decoded.roundId.toString(),
-    bets: decoded.bets.map((b: { amount: bigint; cells: readonly { timeSlotStart: bigint; dataRangeStart: bigint }[] }) => ({
-      amount: b.amount.toString(),
-      cells: b.cells.map((c: { timeSlotStart: bigint; dataRangeStart: bigint }) => ({
-        timeSlotStart: c.timeSlotStart.toString(),
-        dataRangeStart: c.dataRangeStart.toString(),
-      })),
-    })),
-  };
-}
-
 // --- Config ---
 
 const RECEIVER_PRIVATE_KEY = process.env.RECEIVER_PRIVATE_KEY;
@@ -92,16 +74,6 @@ if (!RECEIVER_PRIVATE_KEY) {
 const ethersWallet = new ethers.Wallet(RECEIVER_PRIVATE_KEY);
 const ADDRESS = ethersWallet.address as `0x${string}`;
 
-const messageSigner = async (payload: unknown): Promise<`0x${string}`> => {
-  const message = JSON.stringify(payload, (_key, value) =>
-    typeof value === "bigint" ? value.toString() : value
-  );
-  const digestHex = ethers.id(message);
-  const messageBytes = ethers.getBytes(digestHex);
-  const { serialized: signature } = ethersWallet.signingKey.sign(messageBytes);
-  return signature as `0x${string}`;
-};
-
 // Viem wallet client for EIP-712 auth signing (wallet owner signs to authorize session key)
 const viemAccount = privateKeyToAccount(RECEIVER_PRIVATE_KEY as `0x${string}`);
 const walletClient = createWalletClient({
@@ -114,6 +86,8 @@ const walletClient = createWalletClient({
 const sessionKeyPrivate = generatePrivateKey();
 const sessionKeyAccount = privateKeyToAccount(sessionKeyPrivate);
 const SESSION_KEY_ADDRESS = sessionKeyAccount.address;
+
+const messageSigner = createECDSAMessageSigner(sessionKeyPrivate);
 
 // Contract addresses (Base Sepolia)
 const CUSTODY_ADDRESS = "0x019B65A265EB3363822f2752141b3dF16131b262" as `0x${string}`;
@@ -143,6 +117,70 @@ console.log(`ClearNode:      ${CLEARNODE_URL}`);
 console.log(`API port:       ${BROKER_API_PORT}\n`);
 
 // --- Helpers ---
+
+async function authenticateWallet(client: Client, walletAccount: WalletClient): Promise<SessionKey> {
+
+    console.log(`Wallet address: ${walletAccount.account?.address}`);
+
+
+    const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 60000000);
+
+    const customWalletClient = createWalletClient({
+        account: walletAccount.account,
+        chain: baseSepolia,
+        transport: http(),
+    });
+
+    const allowances = [
+        { asset: "ytest.usd", amount: "1000000000" },
+    ];
+
+    // Create authentication message with session configuration
+    const authMessage = await createAuthRequestMessage({
+        address: ADDRESS,
+        session_key: SESSION_KEY_ADDRESS,
+        application: "onigo-demo",
+        expires_at: expiresAt,
+        scope: "console",
+        allowances,
+    });
+
+    async function handleAuthChallenge(message: AuthChallengeResponse) {
+
+        const authParams = {
+            address: ADDRESS,
+            session_key: SESSION_KEY_ADDRESS,
+            application: "onigo-demo",
+            expires_at: expiresAt,
+            scope: "console",
+            allowances,
+        };
+
+        const eip712Signer = createEIP712AuthMessageSigner(customWalletClient, authParams, { name: "onigo-demo" });
+
+        const authVerifyMessage = await createAuthVerifyMessage(eip712Signer, message);
+
+        await client.sendMessage(authVerifyMessage);
+
+    }
+
+    client.listen(async (message: RPCResponse) => {
+
+        if (message.method === RPCMethod.AuthChallenge) {
+            await handleAuthChallenge(message);
+        }
+    })
+
+    await client.sendMessage(authMessage)
+
+    const sessionKey: SessionKey = {
+        privateKey: sessionKeyPrivate,
+        address: SESSION_KEY_ADDRESS,
+    };
+
+    return sessionKey;
+
+}
 
 function waitForMessage(
   ws: WebSocket,
@@ -186,18 +224,6 @@ function waitForMessage(
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Helper to sign a payload for co-signing
-async function signPayload(payload: unknown[]): Promise<`0x${string}`> {
-  const message = JSON.stringify(payload);
-  const digestHex = ethers.id(message);
-  const messageBytes = ethers.getBytes(digestHex);
-  const { serialized: signature } = ethersWallet.signingKey.sign(messageBytes);
-  return signature as `0x${string}`;
-}
-
-// Track active app sessions for co-signing
-const activeAppSessions = new Map<string, { participants: string[]; version: number }>();
-
 // --- Broker API Types ---
 
 type GridCell = { timeSlotStart: bigint; dataRangeStart: bigint };
@@ -221,8 +247,7 @@ interface CreateSessionRequest {
     amount: string;
     cells: { timeSlotStart: string; dataRangeStart: string }[];
   }[];
-  payload: unknown[];
-  playerSignature: string;
+  payload: unknown;
 }
 
 interface UpdateStateRequest {
@@ -240,38 +265,16 @@ interface SessionResponse {
   error?: string;
 }
 
+interface SessionKey {
+    privateKey: `0x${string}`;
+    address: Address;
+}
+
 // Player sessions state
 const playerSessions = new Map<string, PlayerSession>();
 let clearNodeWs: WebSocket | null = null;
 
 // --- Broker API Handlers ---
-
-function encodeBetData(roundId: bigint, bets: Bet[]): Hex {
-  const BET_DATA_ABI_ENCODE = [
-    {
-      type: "tuple",
-      components: [
-        { name: "roundId", type: "uint256" },
-        {
-          name: "bets",
-          type: "tuple[]",
-          components: [
-            { name: "amount", type: "uint256" },
-            {
-              name: "cells",
-              type: "tuple[]",
-              components: [
-                { name: "timeSlotStart", type: "uint256" },
-                { name: "dataRangeStart", type: "int256" },
-              ],
-            },
-          ],
-        },
-      ],
-    },
-  ] as const;
-  return encodeAbiParameters(BET_DATA_ABI_ENCODE, [{ roundId, bets }]);
-}
 
 async function handleCreateSession(
   request: CreateSessionRequest,
@@ -287,51 +290,33 @@ async function handleCreateSession(
       dataRangeStart: BigInt(c.dataRangeStart),
     })),
   }));
+  const createSessionMsgJson = request.payload as { req: RPCData; sig: string[] };
 
   console.log(`\n[CREATE SESSION] from ${playerAddress}`);
   console.log(`   amount: ${amount}, roundId: ${roundId}`);
 
-  if (!clearNodeWs) {
-    const response: SessionResponse = {
-      type: "session_error",
-      error: "Broker not connected to ClearNode",
-    };
-    clientWs.send(JSON.stringify(response));
-    return;
-  }
-
   try {
-    const payload = request.payload;
-    const playerSignature = request.playerSignature;
 
-    console.log(`   Player signature: ${playerSignature.slice(0, 20)}...`);
-
-    // Broker co-signs the same payload
-    const brokerSignature = await signPayload(payload as unknown[]);
-    console.log(`   Broker signature: ${brokerSignature.slice(0, 20)}...`);
-
-    // Submit with both signatures (player first since they're participant[0])
-    const multiSigRequest = {
-      req: payload,
-      sig: [playerSignature, brokerSignature],
-    };
-
-    const sessionResponsePromise = waitForMessage(
-      clearNodeWs,
-      (msg) =>
-        !!((msg.res as unknown[])?.length &&
-          ((msg.res as string[])[1] === "create_app_session" ||
-            (msg.res as string[])[1] === "app_session_created"))
+    const signedCreateSessionMessageSignature2 = await messageSigner(
+        createSessionMsgJson.req as RPCData
     );
 
-    clearNodeWs.send(JSON.stringify(multiSigRequest));
-    const sessionResponse = await sessionResponsePromise;
-    const resData = (sessionResponse.res as unknown[])[2];
-    const sessionData = Array.isArray(resData) ? resData[0] : resData;
-    const appSessionId = (sessionData as Record<string, unknown>)?.app_session_id as string;
+    createSessionMsgJson.sig.push(signedCreateSessionMessageSignature2);
+
+    console.log(createSessionMsgJson);
+
+    console.log(`   Creating app session via SDK...`);
+
+    const sessionResponse = await yellow.sendMessage(createSessionMsgJson);
+    console.log('✅ Session message sent');
+    console.log(`   Session response: ${JSON.stringify(sessionResponse)}`);
+
+    // Extract appSessionId from the response params
+    const params = sessionResponse.params as Record<string, unknown>;
+    const appSessionId = params?.appSessionId as string;
 
     if (!appSessionId) {
-      throw new Error(`Failed to create app session: ${JSON.stringify(sessionResponse)}`);
+      throw new Error(`Failed to create app session: ${JSON.stringify(appSessionId)}`);
     }
 
     const allocations = [
@@ -388,7 +373,7 @@ async function handleCloseSession(
   const playerAddress = request.playerAddress as `0x${string}`;
   const session = playerSessions.get(playerAddress);
 
-  if (!session || !clearNodeWs) {
+  if (!session) {
     console.log(`[CLOSE SESSION] No session found for ${playerAddress}`);
     return;
   }
@@ -403,21 +388,19 @@ async function handleCloseSession(
       { participant: ADDRESS, asset: "ytest.usd", amount: request.brokerPayout },
     ];
 
-    const closeMsg = await createCloseAppSessionMessage(messageSigner, {
-      app_session_id: session.appSessionId as `0x${string}`,
-      allocations: finalAllocations,
-    });
-
-    const closeResponsePromise = waitForMessage(
-      clearNodeWs,
-      (msg) =>
-        !!((msg.res as unknown[])?.length &&
-          ((msg.res as string[])[1] === "close_app_session" ||
-            (msg.res as string[])[1] === "app_session_closed"))
+    const closeMsg = await createCloseAppSessionMessage(
+      messageSigner,
+      { app_session_id: session.appSessionId as `0x${string}`, allocations: finalAllocations }
     );
 
-    clearNodeWs.send(closeMsg);
-    await closeResponsePromise;
+    const closeSessionMessageJson = JSON.parse(closeMsg);
+
+    const closeSessionResponse = await yellow.sendMessage(
+        JSON.stringify(closeSessionMessageJson)
+    );
+    console.log('✅ Close session message sent');
+
+    console.log('🎉 Close session response:', closeSessionResponse);
 
     playerSessions.delete(playerAddress);
     console.log(`   Session closed. Funds transferred.`);
@@ -426,323 +409,28 @@ async function handleCloseSession(
   }
 }
 
-async function handleUpdateState(
-  request: UpdateStateRequest,
-  clientWs: WebSocket
-): Promise<void> {
-  const playerAddress = request.playerAddress as `0x${string}`;
-  const session = playerSessions.get(playerAddress);
-
-  if (!session) {
-    clientWs.send(JSON.stringify({
-      type: "session_error",
-      error: "No active session for this player",
-    }));
-    return;
-  }
-
-  if (!clearNodeWs) {
-    clientWs.send(JSON.stringify({
-      type: "session_error",
-      error: "Broker not connected to ClearNode",
-    }));
-    return;
-  }
-
-  const newBets: Bet[] = request.bets.map((b) => ({
-    amount: BigInt(b.amount),
-    cells: b.cells.map((c) => ({
-      timeSlotStart: BigInt(c.timeSlotStart),
-      dataRangeStart: BigInt(c.dataRangeStart),
-    })),
-  }));
-
-  console.log(`\n[UPDATE STATE] for ${playerAddress}`);
-  console.log(`   Adding ${newBets.length} bets`);
-
-  try {
-    // Append new bets
-    session.bets = [...session.bets, ...newBets];
-    session.version++;
-
-    const encodedBetData = encodeBetData(session.roundId, session.bets);
-
-    // With weights [0, 100], only broker needs to sign
-    const timestamp = Date.now();
-    const requestId = Math.floor(Math.random() * 1000000);
-    const payload = [
-      requestId,
-      "submit_app_state",
-      {
-        app_session_id: session.appSessionId,
-        allocations: session.allocations,
-        session_data: encodedBetData,
-      },
-      timestamp,
-    ];
-
-    const brokerSignature = await signPayload(payload);
-
-    const stateRequest = {
-      req: payload,
-      sig: [brokerSignature],
-    };
-
-    const stateResponsePromise = waitForMessage(
-      clearNodeWs,
-      (msg) =>
-        !!((msg.res as unknown[])?.length &&
-          ((msg.res as string[])[1] === "submit_app_state" ||
-            (msg.res as string[])[1] === "app_state_submitted"))
-    );
-
-    clearNodeWs.send(JSON.stringify(stateRequest));
-    await stateResponsePromise;
-
-    console.log(`   State updated, version: ${session.version}`);
-
-    clientWs.send(JSON.stringify({
-      type: "state_updated",
-      appSessionId: session.appSessionId,
-    }));
-
-  } catch (err) {
-    console.error(`   Error updating state:`, err);
-    clientWs.send(JSON.stringify({
-      type: "session_error",
-      error: err instanceof Error ? err.message : String(err),
-    }));
-  }
-}
-
 // --- Main ---
 
 async function main() {
   console.log("1. Connecting to ClearNode...");
-  const ws = new WebSocket(CLEARNODE_URL);
-
-  await new Promise<void>((resolve, reject) => {
-    ws.onopen = () => resolve();
-    ws.onerror = (err) => reject(err);
-  });
-  console.log("   Connected.\n");
+  await yellow.connect();
+  console.log('🔌 Connected to Yellow clearnet');
 
   // 2. Authenticate
   console.log("2. Authenticating...");
 
-  const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 3600);
-
-  const authRequestMsg = await createAuthRequestMessage({
-    address: ADDRESS,
-    session_key: SESSION_KEY_ADDRESS,
-    application: "onigo-demo",
-    expires_at: expiresAt,
-    scope: "console",
-    allowances: [],
-  });
-
-  const challengePromise = waitForMessage(ws, (msg) => {
-    const parsed = parseAnyRPCResponse(JSON.stringify(msg));
-    return parsed.method === RPCMethod.AuthChallenge;
-  });
-
-  ws.send(authRequestMsg);
-  const challengeMsg = await challengePromise;
-  console.log("   Received challenge.");
-
-  const eip712Signer = createEIP712AuthMessageSigner(
-    walletClient,
-    {
-      scope: "console",
-      session_key: SESSION_KEY_ADDRESS,
-      expires_at: expiresAt,
-      allowances: [],
-    },
-    { name: "onigo-demo" }
-  );
-
-  const authVerifyMsg = await createAuthVerifyMessage(
-    eip712Signer,
-    parseAuthChallengeResponse(JSON.stringify(challengeMsg))
-  );
-
-  const authResultPromise = waitForMessage(ws, (msg) => {
-    const parsed = parseAnyRPCResponse(JSON.stringify(msg));
-    return parsed.method === RPCMethod.AuthVerify;
-  });
-
-  ws.send(authVerifyMsg);
-  const authResult = await authResultPromise;
-  const authParsed = parseAnyRPCResponse(JSON.stringify(authResult));
-
-  if (!(authParsed.params as Record<string, unknown>)?.success) {
-    throw new Error("Authentication failed");
-  }
+  const sessionKey = await authenticateWallet(yellow, walletClient as WalletClient);
+  const messageSigner = createECDSAMessageSigner(sessionKey.privateKey);
+  
   console.log("   Authenticated.\n");
 
-  // 3. Check balance and withdraw via channel lifecycle if funds available
   console.log("3. Querying ledger balance...");
-  const balMsg = await createGetLedgerBalancesMessage(messageSigner);
-  const balPromise = waitForMessage(ws, (m) => {
-    const r = m.res as unknown[];
-    return r?.[1] === "get_ledger_balances";
-  });
-  ws.send(balMsg);
-  const balResp = await balPromise;
-  const balData = (balResp.res as unknown[])[2] as Record<string, unknown>;
-  const balances = (balData?.ledger_balances ?? balData?.balances) as Record<string, unknown>[] | undefined;
-  const yusd = balances?.find((b) => b.asset === "ytest.usd");
-  const balAmount = yusd?.amount as string | undefined;
-
-  console.log(balAmount);
-
-  // Convert decimal string to smallest unit BigInt - only multiply by 1e6 if it has decimals
-  const balAmountUnits = balAmount
-    ? balAmount.includes(".")
-      ? BigInt(Math.round(parseFloat(balAmount) * 1e6))
-      : BigInt(balAmount)
-    : 0n;
-
-  if (balAmount && balAmountUnits > 0n) {
-    console.log(`   Balance: ${balAmountUnits} ytest.usd`);
-    console.log(`   Initiating withdrawal to Base Sepolia via channel lifecycle...`);
-    try {
-      // 3a. Get or create channel on Base Sepolia
-      console.log("   3a. Getting or creating channel on Base Sepolia...");
-
-      let channelId: `0x${string}`;
-
-      // Create fresh channel
-      {
-        const createChMsg = await createCreateChannelMessage(messageSigner, {
-          chain_id: baseSepolia.id,
-          token: TOKEN_ADDRESS,
-        });
-        const createChPromise = waitForMessage(ws, (m) => {
-          const r = m.res as unknown[];
-          return r?.[1] === "create_channel";
-        }, 30000);
-        ws.send(createChMsg);
-        const createChResp = await createChPromise;
-        const createChParsed = parseCreateChannelResponse(JSON.stringify(createChResp));
-
-        const { channel, state: rpcInitialState, serverSignature } = createChParsed.params;
-        channelId = createChParsed.params.channelId as `0x${string}`;
-        console.log(`       Channel created: ${channelId}`);
-
-        // Map RPC response (stateData) to SDK's UnsignedState (data)
-        const unsignedInitialState = {
-          intent: rpcInitialState.intent,
-          version: BigInt(rpcInitialState.version),
-          data: rpcInitialState.stateData,
-          allocations: rpcInitialState.allocations.map((a) => ({
-            destination: a.destination,
-            token: a.token,
-            amount: BigInt(a.amount),
-          })),
-        };
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const createResult = await nitroliteClient.createChannel({
-          channel: channel as any,
-          unsignedInitialState: unsignedInitialState as any,
-          serverSignature: serverSignature as `0x${string}`,
-        });
-        console.log(`       On-chain tx: ${createResult.txHash}`);
-        await delay(5000);
-      }
-
-      // 3b. Resize channel — use allocate_amount (from Unified Balance, NOT resize_amount)
-      console.log("   3b. Resizing channel (allocate_amount from Unified Balance)...");
-      const resizeMsg = await createResizeChannelMessage(messageSigner, {
-        channel_id: channelId,
-        allocate_amount: balAmountUnits,
-        funds_destination: ADDRESS,
-      });
-      const resizePromise = waitForMessage(ws, (m) => {
-        const r = m.res as unknown[];
-        return r?.[1] === "resize_channel";
-      }, 30000);
-      ws.send(resizeMsg);
-      const resizeResp = await resizePromise;
-      const resizeParsed = parseResizeChannelResponse(JSON.stringify(resizeResp));
-      const { state, serverSignature } = resizeParsed.params;
-      const resizeState = {
-        channelId: resizeParsed.params.channelId as `0x${string}`,
-        serverSignature: serverSignature,
-        intent: state.intent,
-        version: BigInt(state.version),
-        data: state.stateData,
-        allocations: state.allocations.map((a) => ({
-          destination: a.destination,
-          token: a.token,
-          amount: BigInt(a.amount),
-        })),
-      };
-
-      // Fetch proof states from on-chain channel data
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let proofStates: any[] = [];
-      try {
-        const onChainData = await nitroliteClient.getChannelData(channelId);
-        console.log(`       On-chain channel data:`, JSON.stringify(onChainData, (_key, value) =>
-          typeof value === "bigint" ? value.toString() : value, 2));
-        if (onChainData.lastValidState) {
-          proofStates = [onChainData.lastValidState];
-        }
-      } catch (e) {
-        console.log(`       Failed to fetch on-chain data:`, e);
-      }
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const resizeResult = await nitroliteClient.resizeChannel({ resizeState: resizeState as any, proofStates });
-      console.log(`       Resize tx: ${resizeResult.txHash}`);
-      await delay(5000);
-
-      // 3c. Close channel (settle on-chain)
-      console.log("   3c. Closing channel...");
-      const closeMsg = await createCloseChannelMessage(messageSigner, channelId, ADDRESS);
-      const closePromise = waitForMessage(ws, (m) => {
-        const r = m.res as unknown[];
-        return r?.[1] === "close_channel";
-      }, 30000);
-      ws.send(closeMsg);
-      const closeResp = await closePromise;
-      const closeParsed = parseCloseChannelResponse(JSON.stringify(closeResp));
-      const { state: rpcCloseState, serverSignature: closeServerSignature } = closeParsed.params;
-      const finalState = {
-        channelId: closeParsed.params.channelId as `0x${string}`,
-        serverSignature: closeServerSignature as `0x${string}`,
-        intent: rpcCloseState.intent,
-        version: BigInt(rpcCloseState.version),
-        data: rpcCloseState.stateData,
-        allocations: rpcCloseState.allocations.map((a) => ({
-          destination: a.destination,
-          token: a.token,
-          amount: BigInt(a.amount),
-        })),
-      };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const closeTxHash = await nitroliteClient.closeChannel({ finalState: finalState as any, stateData: rpcCloseState.stateData });
-      console.log(`       Close tx: ${closeTxHash}`);
-      await delay(5000);
-
-      // 3d. Withdraw from Custody contract
-      console.log("   3d. Withdrawing from Custody contract...");
-      const withdrawTxHash = await nitroliteClient.withdrawal(TOKEN_ADDRESS, balAmountUnits);
-      console.log(`       Withdrawal tx: ${withdrawTxHash}`);
-      console.log(`       View on BaseScan: https://sepolia.basescan.org/tx/${withdrawTxHash}\n`);
-    } catch (err) {
-      console.error(`   Withdrawal failed:`, err);
-    }
-  } else {
-    console.log(`   No ytest.usd balance to withdraw.\n`);
-  }
+  const balMsg = await createGetLedgerBalancesMessage(messageSigner, ADDRESS, Date.now());
+  const balanceResponse = await yellow.sendMessage(JSON.parse(balMsg));
 
   // Store reference for broker API handlers
-  clearNodeWs = ws;
 
-  // 4. Start broker API server
+  // 3. Start broker API server
   const wss = new WebSocketServer({ port: BROKER_API_PORT });
   console.log(`4. Broker API listening on port ${BROKER_API_PORT}\n`);
 
@@ -757,8 +445,6 @@ async function main() {
 
         if (msg.type === "create_session") {
           await handleCreateSession(msg as CreateSessionRequest, clientWs);
-        } else if (msg.type === "update_state") {
-          await handleUpdateState(msg as UpdateStateRequest, clientWs);
         } else if (msg.type === "close_session") {
           await handleCloseSession(msg as CloseSessionRequest);
           clientWs.send(JSON.stringify({ type: "session_closed" }));
@@ -785,226 +471,14 @@ async function main() {
     });
   });
 
-  // 5. Listen for ClearNode events
-  console.log("5. Listening for ClearNode events...\n");
-
-  ws.on("message", async (data) => {
-    const raw = typeof data === "string" ? data : data.toString();
-    try {
-      const msg = JSON.parse(raw);
-      const res = msg.res as unknown[];
-      if (!res?.length) return;
-
-      const method = res[1] as string;
-      const payload = Array.isArray(res[2]) ? res[2][0] : res[2];
-      const typed = payload as Record<string, unknown>;
-
-      switch (method) {
-        case "create_app_session":
-        case "app_session_created": {
-          console.log(`[SESSION CREATED] app_session_id: ${typed.app_session_id}`);
-          console.log(`   status: ${typed.status}, version: ${typed.version}`);
-          // Track the session for co-signing
-          activeAppSessions.set(typed.app_session_id as string, {
-            participants: (typed.participants as string[]) || [],
-            version: (typed.version as number) || 0,
-          });
-          console.log();
-          break;
-        }
-
-        case "submit_app_state":
-        case "app_state_submitted": {
-          console.log(`[STATE UPDATE] app_session_id: ${typed.app_session_id}`);
-          console.log(`   version: ${typed.version}, status: ${typed.status}`);
-
-          const sessionData = typed.session_data as string | undefined;
-          if (sessionData) {
-            console.log(`   session_data (raw): ${sessionData.slice(0, 80)}...`);
-            try {
-              const decoded = decodeBetData(sessionData as Hex);
-              console.log(`   Decoded BetData:`);
-              console.log(JSON.stringify(formatBetData(decoded), null, 4));
-            } catch (err) {
-              console.log(`   Failed to decode BetData:`, err);
-            }
-          } else {
-            console.log(`   No session_data in this state update`);
-          }
-          // Update tracked version
-          const appSessionId = typed.app_session_id as string;
-          const session = activeAppSessions.get(appSessionId);
-          if (session) {
-            session.version = (typed.version as number) || session.version;
-          }
-          console.log();
-          break;
-        }
-
-        case "close_app_session":
-        case "app_session_closed": {
-          console.log(`[SESSION CLOSED] app_session_id: ${typed.app_session_id}`);
-          console.log(`   status: ${typed.status}, version: ${typed.version}`);
-          // Remove from tracked sessions
-          activeAppSessions.delete(typed.app_session_id as string);
-          console.log();
-          break;
-        }
-
-        case "message": {
-          // Handle application messages - including co-sign requests
-          const messagePayload = typed as Record<string, unknown>;
-
-          if (messagePayload.type === "cosign_request") {
-            console.log(`[CO-SIGN REQUEST] method: ${messagePayload.method}`);
-
-            const requestPayload = messagePayload.payload as unknown[];
-            const playerSignature = messagePayload.player_signature as string;
-            const requestMethod = messagePayload.method as string;
-
-            // Extract app_session_id from the payload params
-            const params = requestPayload[2] as Record<string, unknown>;
-            const appSessionId = params.app_session_id as string;
-
-            console.log(`   app_session_id: ${appSessionId}`);
-            console.log(`   player_signature: ${playerSignature?.slice(0, 20)}...`);
-
-            // Validate the request
-            let isValid = true;
-            let validationError = "";
-
-            // Check if we know about this session
-            if (!activeAppSessions.has(appSessionId)) {
-              // Session might have been created before we started listening
-              // For now, accept it anyway
-              console.log(`   Warning: Unknown app session, accepting anyway`);
-            }
-
-            // Validate BetData if this is a submit_app_state request
-            if (requestMethod === "submit_app_state") {
-              const sessionData = params.session_data as string | undefined;
-              if (sessionData) {
-                try {
-                  const decoded = decodeBetData(sessionData as Hex);
-                  console.log(`   Decoded BetData:`);
-                  console.log(JSON.stringify(formatBetData(decoded), null, 4));
-                } catch (err) {
-                  isValid = false;
-                  validationError = `Invalid BetData: ${err}`;
-                }
-              }
-            }
-
-            if (isValid) {
-              // Sign the payload
-              const brokerSignature = await signPayload(requestPayload);
-              console.log(`   Broker signature: ${brokerSignature.slice(0, 20)}...`);
-
-              // Send co-sign response back via application message
-              const coSignResponse = {
-                type: "cosign_response",
-                method: requestMethod,
-                broker_signature: brokerSignature,
-                app_session_id: appSessionId,
-              };
-
-              const responseMsg = await createApplicationMessage(
-                messageSigner,
-                appSessionId as `0x${string}`,
-                coSignResponse
-              );
-
-              ws.send(responseMsg);
-              console.log(`   Co-sign response sent!`);
-            } else {
-              console.log(`   REJECTED: ${validationError}`);
-              // Send rejection response
-              const rejectResponse = {
-                type: "cosign_rejected",
-                method: requestMethod,
-                error: validationError,
-                app_session_id: appSessionId,
-              };
-
-              const responseMsg = await createApplicationMessage(
-                messageSigner,
-                appSessionId as `0x${string}`,
-                rejectResponse
-              );
-
-              ws.send(responseMsg);
-            }
-            console.log();
-          } else {
-            console.log(`[MESSAGE]`, JSON.stringify(messagePayload, null, 2));
-            console.log();
-          }
-          break;
-        }
-
-        case "asu": {
-          // App State Update — ClearNode relays session state to counterparty
-          const appSession = typed.app_session as Record<string, unknown> | undefined;
-          const participantAllocations = typed.participant_allocations as Record<string, unknown>[] | undefined;
-
-          if (appSession) {
-            const asuAppSessionId = appSession.app_session_id as string;
-            console.log(`[APP STATE UPDATE] app_session_id: ${asuAppSessionId}`);
-            console.log(`   status: ${appSession.status}, version: ${appSession.version}`);
-            console.log(`   participants: ${JSON.stringify(appSession.participants)}`);
-
-            // Track/update the session
-            if (!activeAppSessions.has(asuAppSessionId)) {
-              activeAppSessions.set(asuAppSessionId, {
-                participants: (appSession.participants as string[]) || [],
-                version: (appSession.version as number) || 0,
-              });
-            } else {
-              const session = activeAppSessions.get(asuAppSessionId);
-              if (session) {
-                session.version = (appSession.version as number) || session.version;
-              }
-            }
-
-            if (participantAllocations?.length) {
-              console.log(`   allocations: ${JSON.stringify(participantAllocations)}`);
-            }
-
-            const sd = appSession.session_data as string | undefined;
-            if (sd) {
-              console.log(`   session_data (raw): ${sd.slice(0, 80)}...`);
-              try {
-                const decoded = decodeBetData(sd as Hex);
-                console.log(`   Decoded BetData:`);
-                console.log(JSON.stringify(formatBetData(decoded), null, 4));
-              } catch (err) {
-                console.log(`   Failed to decode BetData:`, err);
-              }
-            }
-
-          } else {
-            console.log(`[APP STATE UPDATE]`, JSON.stringify(typed, null, 2));
-          }
-          console.log();
-          break;
-        }
-
-        default:
-          // Log other methods for debugging
-          if (!["assets", "bu", "channels", "auth_challenge", "auth_verify", "get_ledger_balances"].includes(method)) {
-            console.log(`[${method}]`, JSON.stringify(typed, null, 2));
-          }
-          break;
-      }
-    } catch {
-      // ignore non-JSON
-    }
+  // Listen for any additional messages from the server
+  yellow.listen(async (message: RPCResponse) => {
+      console.log('📨 Received message:', message);
   });
 
   // Keep the process running
   process.on("SIGINT", () => {
     console.log("\nShutting down...");
-    ws.close();
     wss.close();
     process.exit(0);
   });

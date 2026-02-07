@@ -1,7 +1,7 @@
 /**
  * Demo Client: Submit bets to the Onigo Broker
  *
- * The player signs the create_session request, and the broker co-signs.
+ * The broker creates and signs the app session on behalf of the player.
  * After session creation, the broker can update state unilaterally (weights [0, 100]).
  *
  * Usage:
@@ -11,10 +11,29 @@
 import "dotenv/config";
 import WebSocket from "ws";
 import { ethers } from "ethers";
-import { encodeAbiParameters, type Hex } from "viem";
-import { RPCProtocolVersion } from "@erc7824/nitrolite";
+import { Address, generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { createWalletClient, http, encodeAbiParameters, type Hex, WalletClient } from "viem";
+import { baseSepolia } from "viem/chains";
+import { Client } from "yellow-ts";
+import {
+  createAuthRequestMessage,
+  createAuthVerifyMessage,
+  createEIP712AuthMessageSigner,
+  parseAuthChallengeResponse,
+  parseAnyRPCResponse,
+  RPCMethod,
+  createECDSAMessageSigner,
+  createAppSessionMessage,
+  RPCProtocolVersion,
+  RPCData,
+  RPCResponse,
+  AuthChallengeResponse
+} from "@erc7824/nitrolite";
 
-// --- BetData ABI encoding ---
+const yellow = new Client({
+        url: 'wss://clearnet-sandbox.yellow.com/ws',
+    });
+
 
 const BET_DATA_ABI = [
   {
@@ -52,12 +71,27 @@ function encodeBetData(
 const PLAYER_PRIVATE_KEY = process.env.PLAYER_PRIVATE_KEY ?? process.env.SENDER_PRIVATE_KEY;
 const BROKER_URL = process.env.BROKER_URL ?? "ws://localhost:3001";
 const BET_AMOUNT = process.env.BET_AMOUNT ?? "1000000"; // 1 USDC (6 decimals)
+const CLEARNODE_URL = "wss://clearnet-sandbox.yellow.com/ws";
+
+const viemAccount = privateKeyToAccount(PLAYER_PRIVATE_KEY as `0x${string}`);
+
+const walletClient = createWalletClient({
+  account: viemAccount,
+  chain: baseSepolia,
+  transport: http(),
+});
+
+const sessionKeyPrivate = generatePrivateKey();
+const sessionKeyAccount = privateKeyToAccount(sessionKeyPrivate);
+const SESSION_KEY_ADDRESS = sessionKeyAccount.address;
+const messageSigner = createECDSAMessageSigner(sessionKeyPrivate);
 
 if (!PLAYER_PRIVATE_KEY) {
   console.error("Required: PLAYER_PRIVATE_KEY (or SENDER_PRIVATE_KEY)");
   process.exit(1);
 }
 
+// Derive player address from private key
 const wallet = new ethers.Wallet(PLAYER_PRIVATE_KEY);
 const PLAYER_ADDRESS = wallet.address as `0x${string}`;
 
@@ -75,6 +109,70 @@ async function signPayload(payload: unknown[]): Promise<`0x${string}`> {
   return signature as `0x${string}`;
 }
 
+async function authenticateWallet(client: Client, walletAccount: WalletClient): Promise<SessionKey> {
+
+    console.log(`Wallet address: ${walletAccount.account?.address}`);
+
+
+    const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 60000000);
+
+    const customWalletClient = createWalletClient({
+        account: walletAccount.account,
+        chain: baseSepolia,
+        transport: http(),
+    });
+
+    const allowances = [
+        { asset: "ytest.usd", amount: "1000000000" },
+    ];
+
+    // Create authentication message with session configuration
+    const authMessage = await createAuthRequestMessage({
+        address: PLAYER_ADDRESS,
+        session_key: SESSION_KEY_ADDRESS,
+        application: "onigo-demo",
+        expires_at: expiresAt,
+        scope: "console",
+        allowances,
+    });
+
+    async function handleAuthChallenge(message: AuthChallengeResponse) {
+
+        const authParams = {
+            address: PLAYER_ADDRESS,
+            session_key: SESSION_KEY_ADDRESS,
+            application: "onigo-demo",
+            expires_at: expiresAt,
+            scope: "console",
+            allowances,
+        };
+
+        const eip712Signer = createEIP712AuthMessageSigner(customWalletClient, authParams, { name: "onigo-demo" });
+
+        const authVerifyMessage = await createAuthVerifyMessage(eip712Signer, message);
+
+        await client.sendMessage(authVerifyMessage);
+
+    }
+
+    client.listen(async (message: RPCResponse) => {
+
+        if (message.method === RPCMethod.AuthChallenge) {
+            await handleAuthChallenge(message);
+        }
+    })
+
+    await client.sendMessage(authMessage)
+
+    const sessionKey: SessionKey = {
+        privateKey: sessionKeyPrivate,
+        address: SESSION_KEY_ADDRESS,
+    };
+
+    return sessionKey;
+
+}
+
 // --- Types ---
 
 interface CreateSessionRequest {
@@ -86,8 +184,7 @@ interface CreateSessionRequest {
     amount: string;
     cells: { timeSlotStart: string; dataRangeStart: string }[];
   }[];
-  payload: unknown[];
-  playerSignature: string;
+  payload: unknown;
 }
 
 interface SessionResponse {
@@ -96,10 +193,28 @@ interface SessionResponse {
   error?: string;
 }
 
+interface SessionKey {
+    privateKey: `0x${string}`;
+    address: Address;
+}
+
 // --- Main ---
 
 async function main() {
-  console.log("1. Connecting to broker...");
+  console.log("1. Connecting to ClearNode...");
+  await yellow.connect();
+
+  console.log("   Connected.\n");
+
+  // 2. Authenticate
+  console.log("2. Authenticating...");
+
+  const sessionKey = await authenticateWallet(yellow, walletClient as WalletClient);
+  const messageSigner = createECDSAMessageSigner(sessionKey.privateKey);
+
+  console.log("   Authenticated.\n");
+
+  console.log("3. Connecting to broker...");
   const ws = new WebSocket(BROKER_URL);
 
   await new Promise<void>((resolve, reject) => {
@@ -130,15 +245,15 @@ async function main() {
   }
 
   // 2. Get broker address
-  console.log("2. Getting broker address...");
+  console.log("4. Getting broker address...");
   const brokerInfo = await sendRequest<{ type: "broker_address"; address: string }>({
     type: "get_broker_address",
   });
   const BROKER_ADDRESS = brokerInfo.address as `0x${string}`;
   console.log(`   Broker: ${BROKER_ADDRESS}\n`);
 
-  // 3. Create and sign a session request
-  console.log("3. Creating session with bet...");
+  // 5. Create session with bet (broker handles Yellow Network interaction)
+  console.log("5. Creating session with bet...");
 
   const now = Math.floor(Date.now() / 1000);
   const roundId = "1";
@@ -170,8 +285,8 @@ async function main() {
   const requestId = Math.floor(Math.random() * 1000000);
 
   const appDefinition = {
-    application: "onigo",
-    protocol: RPCProtocolVersion.NitroRPC_0_2,
+    application: "onigo-demo",
+    protocol: RPCProtocolVersion.NitroRPC_0_4,
     participants: [PLAYER_ADDRESS, BROKER_ADDRESS],
     weights: [0, 100], // Broker-controlled
     quorum: 100,
@@ -184,31 +299,27 @@ async function main() {
     { participant: BROKER_ADDRESS, asset: "ytest.usd", amount: "0" },
   ];
 
-  const payload = [
-    requestId,
-    "create_app_session",
-    {
-      definition: appDefinition,
-      allocations,
-      session_data: encodedBetData,
-    },
-    timestamp,
-  ];
+  const createSessionMsg = await createAppSessionMessage(messageSigner, {
+    definition: appDefinition,
+    allocations,
+    session_data: encodedBetData,
+  });
+
+  const createSessionMsgJson = JSON.parse(createSessionMsg);
 
   // Sign the payload
-  const playerSignature = await signPayload(payload);
-  console.log(`   Player signature: ${playerSignature.slice(0, 20)}...`);
+  console.log(createSessionMsgJson);
   console.log(`   Round: ${roundId}`);
   console.log(`   Cells: [${now}, 3100], [${now + 300}, 3200]`);
 
+  // Send bet details to broker - broker creates the app session
   const createRequest: CreateSessionRequest = {
     type: "create_session",
     playerAddress: PLAYER_ADDRESS,
     amount: BET_AMOUNT,
     roundId,
     bets,
-    payload,
-    playerSignature,
+    payload: createSessionMsgJson
   };
 
   const createResponse = await sendRequest<SessionResponse>(createRequest);
