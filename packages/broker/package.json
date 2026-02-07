@@ -20,7 +20,8 @@
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "viem": "^2.39.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "yellow-ts": "^0.0.10"
   },
   "devDependencies": {
     "@types/node": "^25.2.0",

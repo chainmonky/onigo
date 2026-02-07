@@ -3,7 +3,7 @@ import { PriceFetcher } from "./priceFetcher.js";
 import { WebSocketServer } from "./wsServer.js";
 import type { MarketConfig } from "./types.js";
 
-const WS_PORT = 3001;
+const WS_PORT = 3002;
 
 // BTC/USDC Market Configuration
 // Smaller price increments = more rows = harder to win

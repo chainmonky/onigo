@@ -5,6 +5,13 @@ __metadata:
   version: 6
   cacheKey: 8
 
+"-@npm:^0.0.1":
+  version: 0.0.1
+  resolution: "-@npm:0.0.1"
+  checksum: 33786d96a8c404f3ce4db242b50d9a8f6013b3a0673bba52186b92f016429135ec2d9b9f77abf85c2a2b757c85e9b33a1f44d5dbf9740fd6294de87198681fd6
+  languageName: node
+  linkType: hard
+
 "@adraffy/ens-normalize@npm:1.10.1":
   version: 1.10.1
   resolution: "@adraffy/ens-normalize@npm:1.10.1"
@@ -348,7 +355,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@erc7824/nitrolite@npm:^0.5.3":
+"@erc7824/nitrolite@npm:^0.5.1, @erc7824/nitrolite@npm:^0.5.3":
   version: 0.5.3
   resolution: "@erc7824/nitrolite@npm:0.5.3"
   dependencies:
@@ -3588,6 +3595,7 @@ __metadata:
     typescript: ~5.8.2
     viem: ^2.39.0
     ws: ^8.18.0
+    yellow-ts: ^0.0.10
   languageName: unknown
   linkType: soft
 
@@ -17227,6 +17235,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"websocket-ts@npm:^2.0.0":
+  version: 2.2.1
+  resolution: "websocket-ts@npm:2.2.1"
+  checksum: e65f0e6ef759604f96709e025b42514eb5299c42ab3351422aa83dcbbcc89c4254f974f4ae51da6dcdc26aa31463054ea7bc4dec1d748a769f09becb8512742b
+  languageName: node
+  linkType: hard
+
 "whatwg-url@npm:^5.0.0":
   version: 5.0.0
   resolution: "whatwg-url@npm:5.0.0"
@@ -17664,6 +17679,18 @@ __metadata:
     buffer-crc32: ~0.2.3
     fd-slicer: ~1.1.0
   checksum: 7f21fe0bbad6e2cb130044a5d1d0d5a0e5bf3d8d4f8c4e6ee12163ce798fee3de7388d22a7a0907f563ac5f9d40f8699a223d3d5c1718da90b0156da6904022b
+  languageName: node
+  linkType: hard
+
+"yellow-ts@npm:^0.0.10":
+  version: 0.0.10
+  resolution: "yellow-ts@npm:0.0.10"
+  dependencies:
+    "-": ^0.0.1
+    "@erc7824/nitrolite": ^0.5.1
+    websocket-ts: ^2.0.0
+    ws: ^8.18.0
+  checksum: 696c4e3755d6fbb75e18353efd937e042ff710981d04e1a17d3e925e845b7414b1d458777d025ef11db0508aaac229d1a31d3b367ae468f0a4904ed022c2bfc1
   languageName: node
   linkType: hard
 

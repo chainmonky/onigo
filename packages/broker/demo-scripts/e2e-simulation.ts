@@ -2,11 +2,12 @@
  * End-to-End Simulation: Full betting round lifecycle
  *
  * This script simulates the complete flow:
- * 1. Connect to Broker and Keeper services
- * 2. User places a bet during betting phase
- * 3. Monitor live round with real-time price/hit updates from Keeper
- * 4. Keeper calculates hit cells when round ends
- * 5. Trigger settlement via Broker
+ * 1. Connect to ClearNode and authenticate with session key
+ * 2. Connect to Broker and Keeper services
+ * 3. User places a bet during betting phase (creates app session payload)
+ * 4. Monitor live round with real-time price/hit updates from Keeper
+ * 5. Keeper calculates hit cells when round ends
+ * 6. Trigger settlement via Broker
  *
  * Prerequisites:
  * - Keeper service running on ws://localhost:3001 (Socket.IO)
@@ -33,9 +34,21 @@ import {
   http,
   type Hex,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { generatePrivateKey, privateKeyToAccount, type Address } from "viem/accounts";
 import { baseSepolia, localhost } from "viem/chains";
-import { RPCProtocolVersion } from "@erc7824/nitrolite";
+import { Client } from "yellow-ts";
+import {
+  createAuthRequestMessage,
+  createAuthVerifyMessage,
+  createEIP712AuthMessageSigner,
+  createECDSAMessageSigner,
+  createAppSessionMessage,
+  RPCMethod,
+  RPCProtocolVersion,
+  type RPCResponse,
+  type AuthChallengeResponse,
+  type RPCData,
+} from "@erc7824/nitrolite";
 
 // ============================================================================
 // Configuration
@@ -47,9 +60,10 @@ const BROKER_URL = process.env.BROKER_URL ?? "ws://localhost:3002";
 const KEEPER_URL = process.env.KEEPER_URL ?? "ws://localhost:3001";
 const BET_AMOUNT = process.env.BET_AMOUNT ?? "10000"; // 0.01 USDC (6 decimals) - very small test amount
 const MARKET_ID = parseInt(process.env.MARKET_ID ?? "1");
-const RPC_URL = process.env.RPC_URL ?? "https://base-sepolia-rpc.publicnode.com ";
+const RPC_URL = process.env.RPC_URL ?? "https://base-sepolia-rpc.publicnode.com";
 const CHAIN_ID = parseInt(process.env.CHAIN_ID ?? "84532");
 const ONIGO_CONTRACT_ADDRESS = process.env.ONIGO_CONTRACT_ADDRESS as `0x${string}`;
+const CLEARNODE_URL = process.env.CLEARNODE_URL ?? "wss://clearnet-sandbox.yellow.com/ws";
 
 if (!PLAYER_PRIVATE_KEY) {
   console.error("Required: PLAYER_PRIVATE_KEY (or SENDER_PRIVATE_KEY)");
@@ -66,8 +80,32 @@ if (!ONIGO_CONTRACT_ADDRESS) {
   process.exit(1);
 }
 
+// ============================================================================
+// Yellow Network Client & Session Key Setup
+// ============================================================================
+
+const yellow = new Client({
+  url: CLEARNODE_URL,
+});
+
 const wallet = new ethers.Wallet(PLAYER_PRIVATE_KEY);
 const PLAYER_ADDRESS = wallet.address as `0x${string}`;
+
+// Viem wallet client for EIP-712 auth signing
+const viemAccount = privateKeyToAccount(PLAYER_PRIVATE_KEY as `0x${string}`);
+const playerWalletClient = createWalletClient({
+  account: viemAccount,
+  chain: baseSepolia,
+  transport: http(),
+});
+
+// Generate ephemeral session key
+const sessionKeyPrivate = generatePrivateKey();
+const sessionKeyAccount = privateKeyToAccount(sessionKeyPrivate);
+const SESSION_KEY_ADDRESS = sessionKeyAccount.address;
+
+// Session key message signer - will be updated after authentication
+let messageSigner = createECDSAMessageSigner(sessionKeyPrivate);
 
 // ============================================================================
 // Onigo Contract ABI (minimal for market creation)
@@ -176,6 +214,11 @@ function encodeBetData(
 // Types
 // ============================================================================
 
+interface SessionKey {
+  privateKey: `0x${string}`;
+  address: Address;
+}
+
 // Keeper message types (Socket.IO)
 interface KeeperGridCell {
   priceRangeStart: number;
@@ -232,14 +275,6 @@ interface KeeperRoundEndPayload {
   };
 }
 
-type KeeperMessage =
-  | { type: "CONNECTED" }
-  | { type: "SUBSCRIBED"; payload: { marketId: number } }
-  | { type: "ROUND_START"; payload: KeeperRoundStartPayload }
-  | { type: "PHASE_CHANGE"; payload: { marketId: number; roundId: number; phase: string } }
-  | { type: "PRICE_UPDATE"; payload: KeeperPriceUpdatePayload }
-  | { type: "ROUND_END"; payload: KeeperRoundEndPayload };
-
 // Broker message types (native WebSocket)
 interface BrokerRoundSettled {
   type: "round_settled";
@@ -265,19 +300,22 @@ interface BrokerBrokerAddress {
   address: `0x${string}`;
 }
 
+interface CreateSessionRequest {
+  type: "create_session";
+  playerAddress: string;
+  amount: string;
+  marketId: string;
+  roundId: string;
+  bets: {
+    amount: string;
+    cells: { timeSlotStart: string; dataRangeStart: string }[];
+  }[];
+  payload: { req: RPCData; sig: string[] };
+}
+
 // ============================================================================
 // Utility Functions
 // ============================================================================
-
-async function signPayload(payload: unknown[]): Promise<`0x${string}`> {
-  const message = JSON.stringify(payload);
-  const digestHex = ethers.id(message);
-  const messageBytes = ethers.getBytes(digestHex);
-  
-  // Use RAW ECDSA signing (NO EIP-191 prefix) - matches ClearNode expectation
-  const { serialized: signature } = wallet.signingKey.sign(messageBytes);
-  return signature as `0x${string}`;
-}
 
 function formatPrice(price: number): string {
   return `$${price.toLocaleString()}`;
@@ -301,6 +339,7 @@ interface SimulationState {
   brokerWs: WebSocket | null;
   keeperSocket: Socket | null;
   brokerAddress: `0x${string}` | null;
+  authenticated: boolean;
   currentRound: {
     roundId: number;
     phase: string;
@@ -321,6 +360,7 @@ const state: SimulationState = {
   brokerWs: null,
   keeperSocket: null,
   brokerAddress: null,
+  authenticated: false,
   currentRound: null,
   betPlaced: false,
   appSessionId: null,
@@ -329,14 +369,86 @@ const state: SimulationState = {
 };
 
 // ============================================================================
+// ClearNode Authentication
+// ============================================================================
+
+async function authenticateWithClearNode(): Promise<SessionKey> {
+  console.log("\n" + "=".repeat(60));
+  console.log("STEP 1: Connecting to ClearNode & Authenticating");
+  console.log("=".repeat(60));
+  console.log(`  ClearNode URL: ${CLEARNODE_URL}`);
+  console.log(`  Player address: ${PLAYER_ADDRESS}`);
+  console.log(`  Session key: ${SESSION_KEY_ADDRESS}`);
+
+  await yellow.connect();
+  console.log("  Connected to ClearNode.");
+
+  const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 60000000);
+
+  const customWalletClient = createWalletClient({
+    account: playerWalletClient.account,
+    chain: baseSepolia,
+    transport: http(),
+  });
+
+  const allowances = [
+    { asset: "ytest.usd", amount: "1000000000" },
+  ];
+
+  // Create authentication message with session configuration
+  const authMessage = await createAuthRequestMessage({
+    address: PLAYER_ADDRESS,
+    session_key: SESSION_KEY_ADDRESS,
+    application: "onigo",
+    expires_at: expiresAt,
+    scope: "console",
+    allowances,
+  });
+
+  async function handleAuthChallenge(message: AuthChallengeResponse) {
+    const authParams = {
+      address: PLAYER_ADDRESS,
+      session_key: SESSION_KEY_ADDRESS,
+      application: "onigo",
+      expires_at: expiresAt,
+      scope: "console",
+      allowances,
+    };
+
+    const eip712Signer = createEIP712AuthMessageSigner(customWalletClient, authParams, { name: "onigo" });
+
+    const authVerifyMessage = await createAuthVerifyMessage(eip712Signer, message);
+
+    await yellow.sendMessage(authVerifyMessage);
+  }
+
+  yellow.listen(async (message: RPCResponse) => {
+    if (message.method === RPCMethod.AuthChallenge) {
+      await handleAuthChallenge(message as AuthChallengeResponse);
+    }
+  });
+
+  await yellow.sendMessage(authMessage);
+
+  console.log("  Authenticated with ClearNode.");
+
+  const sessionKey: SessionKey = {
+    privateKey: sessionKeyPrivate,
+    address: SESSION_KEY_ADDRESS,
+  };
+
+  return sessionKey;
+}
+
+// ============================================================================
 // Broker Connection (Native WebSocket)
 // ============================================================================
 
 async function connectToBroker(): Promise<void> {
   console.log("\n" + "=".repeat(60));
-  console.log("STEP 1: Connecting to Broker Service (WebSocket)");
+  console.log("STEP 2: Connecting to Broker Service (WebSocket)");
   console.log("=".repeat(60));
-  console.log(`Broker URL: ${BROKER_URL}`);
+  console.log(`  Broker URL: ${BROKER_URL}`);
 
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(BROKER_URL);
@@ -393,9 +505,9 @@ async function getBrokerAddress(): Promise<void> {
 
 async function connectToKeeper(): Promise<void> {
   console.log("\n" + "=".repeat(60));
-  console.log("STEP 2: Connecting to Keeper Service (Socket.IO)");
+  console.log("STEP 3: Connecting to Keeper Service (Socket.IO)");
   console.log("=".repeat(60));
-  console.log(`Keeper URL: ${KEEPER_URL}`);
+  console.log(`  Keeper URL: ${KEEPER_URL}`);
 
   return new Promise((resolve, reject) => {
     const socket = io(KEEPER_URL, {
@@ -443,7 +555,7 @@ async function subscribeToMarket(): Promise<void> {
 }
 
 // ============================================================================
-// Bet Placement
+// Bet Placement (Using createAppSessionMessage pattern from demo.ts)
 // ============================================================================
 
 async function placeBet(roundId: number, gridBounds: KeeperRoundStartPayload["gridBounds"]): Promise<void> {
@@ -452,7 +564,7 @@ async function placeBet(roundId: number, gridBounds: KeeperRoundStartPayload["gr
   }
 
   console.log("\n" + "=".repeat(60));
-  console.log("STEP 3: Placing Bet");
+  console.log("STEP 4: Placing Bet");
   console.log("=".repeat(60));
 
   const priceIncrement = state.currentRound.config.priceIncrement;
@@ -513,13 +625,10 @@ async function placeBet(roundId: number, gridBounds: KeeperRoundStartPayload["gr
     }))
   );
 
-  // Build create_app_session payload
-  const timestamp = Date.now();
-  const requestId = Math.floor(Math.random() * 1000000);
-
+  // Build app definition (following demo.ts pattern)
   const appDefinition = {
     application: "onigo",
-    protocol: RPCProtocolVersion.NitroRPC_0_2,
+    protocol: RPCProtocolVersion.NitroRPC_0_4,
     participants: [PLAYER_ADDRESS, state.brokerAddress],
     weights: [0, 100], // Broker-controlled
     quorum: 100,
@@ -532,35 +641,28 @@ async function placeBet(roundId: number, gridBounds: KeeperRoundStartPayload["gr
     { participant: state.brokerAddress, asset: "ytest.usd", amount: "0" },
   ];
 
-  const payload = [
-    requestId,
-    "create_app_session",
-    {
-      definition: appDefinition,
-      allocations,
-      session_data: encodedBetData,
-    },
-    timestamp,
-  ];
+  // Create the app session message using the SDK (player signs)
+  const createSessionMsg = await createAppSessionMessage(messageSigner, {
+    definition: appDefinition,
+    allocations,
+    session_data: encodedBetData,
+  });
 
-  // Sign the payload
-  const playerSignature = await signPayload(payload);
-  console.log(`  Player signature: ${playerSignature.slice(0, 20)}...`);
+  // Parse to get { req, sig } structure
+  const createSessionMsgJson = JSON.parse(createSessionMsg) as { req: RPCData; sig: string[] };
 
+  console.log(`  Created app session payload with player signature`);
+  console.log(`  Payload:`, JSON.stringify(createSessionMsgJson, null, 2));
 
-console.log("[DEBUG] Player signing:");
-console.log("  Payload:", JSON.stringify(payload));
-console.log("  Signature:", playerSignature);
-
-  const createRequest = {
+  // Build the create_session request for the broker
+  const createRequest: CreateSessionRequest = {
     type: "create_session",
     playerAddress: PLAYER_ADDRESS,
     amount: BET_AMOUNT,
     marketId: MARKET_ID.toString(),
     roundId: roundId.toString(),
     bets,
-    payload,
-    playerSignature,
+    payload: createSessionMsgJson,
   };
 
   return new Promise((resolve, reject) => {
@@ -817,7 +919,7 @@ async function triggerSettlement(roundId: number, hitCells: { timeSlotStart: str
   }
 
   console.log("\n" + "=".repeat(60));
-  console.log("STEP 4: Triggering Settlement");
+  console.log("STEP 5: Triggering Settlement");
   console.log("=".repeat(60));
   console.log(`  Market ID: ${MARKET_ID}`);
   console.log(`  Round ID: ${roundId}`);
@@ -843,7 +945,7 @@ async function triggerSettlement(roundId: number, hitCells: { timeSlotStart: str
           console.log(`    Winners: ${msg.winners}`);
           console.log(`    Total Payout: ${msg.totalPayout}`);
           resolve();
-        } 
+        }
       } catch {
         // ignore parse errors
       }
@@ -973,8 +1075,10 @@ async function main(): Promise<void> {
   console.log("ONIGO E2E SIMULATION");
   console.log("=".repeat(60));
   console.log(`Player:     ${PLAYER_ADDRESS}`);
+  console.log(`Session Key: ${SESSION_KEY_ADDRESS}`);
   console.log(`Broker URL: ${BROKER_URL}`);
   console.log(`Keeper URL: ${KEEPER_URL}`);
+  console.log(`ClearNode:  ${CLEARNODE_URL}`);
   console.log(`Bet Amount: ${BET_AMOUNT}`);
   console.log(`Market ID:  ${MARKET_ID}`);
   console.log(`Contract:   ${ONIGO_CONTRACT_ADDRESS}`);
@@ -983,11 +1087,16 @@ async function main(): Promise<void> {
     // Step 0: Ensure market exists on-chain
     await ensureMarketExists();
 
-    // Step 1: Connect to Broker (native WebSocket)
+    // Step 1: Connect to ClearNode and authenticate
+    const sessionKey = await authenticateWithClearNode();
+    messageSigner = createECDSAMessageSigner(sessionKey.privateKey);
+    state.authenticated = true;
+
+    // Step 2: Connect to Broker (native WebSocket)
     await connectToBroker();
     await getBrokerAddress();
 
-    // Step 2: Connect to Keeper (Socket.IO)
+    // Step 3: Connect to Keeper (Socket.IO)
     await connectToKeeper();
     await subscribeToMarket();
 
@@ -998,7 +1107,7 @@ async function main(): Promise<void> {
     console.log("WAITING FOR ROUND TO START...");
     console.log("=".repeat(60));
     console.log("The simulation will:");
-    console.log("  1. Place a bet when betting phase begins");
+    console.log("  1. Place a bet when betting phase begins (using createAppSessionMessage)");
     console.log("  2. Monitor live price updates during LIVE phase");
     console.log("  3. Calculate hits when round ends");
     console.log("  4. Trigger settlement via Broker");
