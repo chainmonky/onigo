@@ -47,6 +47,7 @@
     "usehooks-ts": "~3.1.0",
     "viem": "2.39.0",
     "wagmi": "2.19.5",
+    "yellow-ts": "^0.0.10",
     "zustand": "~5.0.0"
   },
   "devDependencies": {

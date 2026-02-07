@@ -161,7 +161,7 @@ export function ChartWithGrid() {
   return (
     <div className="w-full overflow-x-auto">
       <div className="flex items-start">
-        <div className="shrink-0 relative" style={{ width: 300, maxWidth: 600, height: gridHeight }}>
+        <div className="shrink-0 relative" style={{ width: 500, maxWidth: 800, height: gridHeight }}>
           {isLoading && historicalData.length === 0 ? (
             <div className="absolute inset-0 flex items-center justify-center bg-base-200/50">
               <div className="loading loading-spinner loading-sm text-primary"></div>

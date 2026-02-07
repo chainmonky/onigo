@@ -11,6 +11,7 @@
     "e2e": "tsx demo-scripts/e2e-simulation.ts",
     "check-balance": "tsx demo-scripts/check-balance.ts",
     "receiver": "tsx demo-scripts/receiver.ts",
+    "deposit-and-verify": "tsx demo-scripts/deposit.ts",
     "get-app-sessions": "tsx demo-scripts/get-app-sessions.ts"
   },
   "dependencies": {
